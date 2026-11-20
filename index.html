@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Solomon Building Materials</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body {
+      background-color: var(--tg-theme-bg-color, #f4f4f5);
+      color: var(--tg-theme-text-color, #18181b);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .card-surface {
+      background-color: var(--tg-theme-secondary-bg-color, #ffffff);
+    }
+    .hint-text {
+      color: var(--tg-theme-hint-color, #71717a);
+    }
+    .accent-btn {
+      background-color: var(--tg-theme-button-color, #2563eb);
+      color: var(--tg-theme-button-text-color, #ffffff);
+    }
+    input[type="number"]::-webkit-inner-spin-button,
+    input[type="number"]::-webkit-outer-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+  </style>
+</head>
+<body class="pb-28 select-none">
+
+  <script>
+    // PASTE YOUR DEPLOYED GOOGLE APPS SCRIPT WEB APP (/exec) URL BELOW:
+    const API_URL = "https://script.google.com/macros/s/AKfycbzbCBWPh82bDXjQ5GT0esMETuwz295OTAvDeE0eZ8gMfpbG2WAV--uCrNOKaAAsWsPV/exec";
+  </script>
+
+  <!-- Header -->
+  <header class="sticky top-0 z-20 card-surface border-b border-black/10 px-4 py-3 shadow-sm">
+    <div class="flex items-center justify-between">
+      <div>
+        <h1 class="text-lg font-bold tracking-tight">🏗️ Solomon Building Materials</h1>
+        <p class="text-xs hint-text">Live Catalog &amp; Direct Site Delivery</p>
+      </div>
+      <button id="cartBadgeBtn" onclick="openCheckout()" class="hidden accent-btn px-3 py-1.5 rounded-full text-xs font-semibold shadow">
+        🛒 <span id="headerCartCount">0</span>
+      </button>
+    </div>
+
+    <!-- Search Bar -->
+    <div class="mt-2.5">
+      <input
+        id="searchInput"
+        type="text"
+        placeholder="Search cement, rebar, sand, blocks..."
+        oninput="renderCatalog()"
+        class="w-full rounded-xl px-3.5 py-2 text-sm bg-black/5 focus:outline-none focus:ring-2 focus:ring-blue-500"
+      />
+    </div>
+  </header>
+
+  <!-- Catalog View -->
+  <main id="catalogView" class="p-4 space-y-3">
+    <div id="loadingState" class="text-center py-12 hint-text text-sm">
+      Loading live materials &amp; stock...
+    </div>
+    <div id="catalogList" class="space-y-3"></div>
+  </main>
+
+  <!-- Checkout View -->
+  <section id="checkoutView" class="hidden p-4 space-y-4">
+    <div class="flex items-center justify-between">
+      <h2 class="text-lg font-bold">🧾 Review Order</h2>
+      <button onclick="closeCheckout()" class="text-sm font-medium text-blue-500">
+        ← Back to Shop
+      </button>
+    </div>
+
+    <!-- Cart Summary Card -->
+    <div class="card-surface rounded-2xl p-4 shadow-sm space-y-3">
+      <div id="checkoutItems" class="divide-y divide-black/10 text-sm"></div>
+      <div class="pt-3 border-t border-black/10 flex justify-between items-center font-bold text-base">
+        <span>Estimated Total</span>
+        <span id="checkoutTotal">0 ETB</span>
+      </div>
+    </div>
+
+    <!-- Delivery Form -->
+    <div class="card-surface rounded-2xl p-4 shadow-sm space-y-3">
+      <h3 class="font-semibold text-sm">🚚 Delivery Details</h3>
+
+      <div>
+        <label class="block text-xs hint-text mb-1">Full Name *</label>
+        <input id="inputName" type="text" placeholder="Your name"
+          class="w-full rounded-xl px-3 py-2.5 text-sm bg-black/5 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+      </div>
+
+      <div>
+        <label class="block text-xs hint-text mb-1">Phone Number *</label>
+        <input id="inputPhone" type="tel" placeholder="e.g., 0911 00 00 00"
+          class="w-full rounded-xl px-3 py-2.5 text-sm bg-black/5 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+      </div>
+
+      <div>
+        <label class="block text-xs hint-text mb-1">Delivery Location / Site *</label>
+        <input id="inputLocation" type="text" placeholder="e.g., Hawassa, Tabor Sub-city, near main road"
+          class="w-full rounded-xl px-3 py-2.5 text-sm bg-black/5 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+      </div>
+
+      <div>
+        <label class="block text-xs hint-text mb-1">Site Notes (Optional)</label>
+        <input id="inputNotes" type="text" placeholder="e.g., Truck access gate on east side"
+          class="w-full rounded-xl px-3 py-2.5 text-sm bg-black/5 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+      </div>
+    </div>
+
+    <!-- Fallback Submit Button (for desktop browsers outside Telegram) -->
+    <button id="fallbackSubmitBtn" onclick="submitOrder()"
+      class="w-full accent-btn py-3.5 rounded-2xl font-bold text-sm shadow-md">
+      Confirm &amp; Place Order
+    </button>
+  </section>
+
+  <!-- Order Success View -->
+  <section id="successView" class="hidden p-6 text-center space-y-4 mt-8">
+    <div class="text-5xl">✅</div>
+    <h2 class="text-xl font-bold">Order Confirmed!</h2>
+    <p class="text-sm hint-text">
+      Order ID: <span id="confirmedOrderId" class="font-mono font-bold text-blue-500"></span><br/>
+      A receipt has been sent to your Telegram chat. We will call you shortly to arrange delivery.
+    </p>
+    <button onclick="resetApp()" class="accent-btn px-6 py-3 rounded-xl font-semibold text-sm shadow">
+      Place Another Order
+    </button>
+  </section>
+
+  <script>
+    const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+    if (tg) {
+      tg.ready();
+      tg.expand();
+    }
+
+    let catalog = [];
+    let cart = {}; // { itemId: qty }
+    let currentScreen = "catalog"; // "catalog" | "checkout" | "success"
+    let isSubmitting = false;
+
+    const tgUser = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) ? tg.initDataUnsafe.user : {};
+    if (tgUser.first_name) {
+      document.getElementById("inputName").value = [tgUser.first_name, tgUser.last_name].filter(Boolean).join(" ");
+    }
+
+    async function loadCatalog() {
+      try {
+        const res = await fetch(API_URL + "?action=catalog");
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "Failed to load catalog");
+        catalog = data.items || [];
+        document.getElementById("loadingState").classList.add("hidden");
+        renderCatalog();
+      } catch (err) {
+        document.getElementById("loadingState").innerHTML =
+          `<div class="text-red-500 font-medium">Could not load catalog.<br><span class="text-xs">${err.message}</span></div>`;
+      }
+    }
+
+    function roundQty(n) {
+      return Math.round(Number(n) * 100) / 100;
+    }
+
+    function fmt(n) {
+      return Number(n).toLocaleString("en-US");
+    }
+
+    function updateQty(id, delta) {
+      const item = catalog.find(i => i.id === id);
+      if (!item) return;
+      const current = cart[id] || 0;
+      const next = roundQty(Math.max(0, Math.min(item.stock, current + delta)));
+      if (next <= 0) {
+        delete cart[id];
+      } else {
+        cart[id] = next;
+      }
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+      renderCatalog();
+      updateMainButton();
+    }
+
+    function setExactQty(id, rawVal) {
+      const item = catalog.find(i => i.id === id);
+      if (!item) return;
+      const val = roundQty(parseFloat(rawVal));
+      if (!Number.isFinite(val) || val <= 0) {
+        delete cart[id];
+      } else {
+        cart[id] = Math.min(item.stock, val);
+      }
+      renderCatalog();
+      updateMainButton();
+    }
+
+    function getCartTotals() {
+      let totalETB = 0;
+      let itemCount = 0;
+      const entries = [];
+      for (const id in cart) {
+        const item = catalog.find(i => i.id === id);
+        if (item && cart[id] > 0) {
+          const lineTotal = roundQty(item.price * cart[id]);
+          totalETB = roundQty(totalETB + lineTotal);
+          itemCount += 1;
+          entries.push({ ...item, qty: cart[id], lineTotal });
+        }
+      }
+      return { totalETB, itemCount, entries };
+    }
+
+    function renderCatalog() {
+      const query = document.getElementById("searchInput").value.toLowerCase().trim();
+      const container = document.getElementById("catalogList");
+      const filtered = catalog.filter(it => it.name.toLowerCase().includes(query));
+
+      if (!filtered.length) {
+        container.innerHTML = `<div class="text-center py-8 hint-text text-sm">No matching materials found.</div>`;
+        return;
+      }
+
+      container.innerHTML = filtered.map(item => {
+        const qty = cart[item.id] || 0;
+        const lowStock = item.stock <= 10;
+        return `
+          <div class="card-surface rounded-2xl p-4 shadow-sm flex items-center justify-between gap-3">
+            <div class="min-w-0 flex-1">
+              <div class="font-semibold text-sm truncate">${item.name}</div>
+              <div class="text-base font-bold text-blue-600 mt-0.5">
+                ${fmt(item.price)} ETB <span class="text-xs font-normal hint-text">/ ${item.unit}</span>
+              </div>
+              <div class="text-xs mt-1 ${lowStock ? "text-amber-600 font-medium" : "hint-text"}">
+                ${fmt(item.stock)} ${item.unit} available
+              </div>
+            </div>
+
+            <div class="flex items-center gap-1.5 shrink-0">
+              ${qty === 0 ? `
+                <button onclick="updateQty('${item.id}', 1)"
+                  class="accent-btn px-4 py-2 rounded-xl text-xs font-semibold shadow-sm active:scale-95 transition">
+                  + Add
+                </button>
+              ` : `
+                <button onclick="updateQty('${item.id}', -1)"
+                  class="w-8 h-8 rounded-xl bg-black/10 font-bold text-base flex items-center justify-center active:scale-95">
+                  −
+                </button>
+                <input type="number" step="any" min="0" max="${item.stock}" value="${qty}"
+                  onchange="setExactQty('${item.id}', this.value)"
+                  class="w-14 text-center font-bold text-sm bg-black/5 rounded-xl py-1.5 focus:outline-none" />
+                <button onclick="updateQty('${item.id}', 1)"
+                  class="w-8 h-8 rounded-xl accent-btn font-bold text-base flex items-center justify-center active:scale-95">
+                  +
+                </button>
+              `}
+            </div>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function updateMainButton() {
+      const { totalETB, itemCount } = getCartTotals();
+      const badgeBtn = document.getElementById("cartBadgeBtn");
+      document.getElementById("headerCartCount").textContent = itemCount;
+
+      if (itemCount > 0 && currentScreen === "catalog") {
+        badgeBtn.classList.remove("hidden");
+      } else {
+        badgeBtn.classList.add("hidden");
+      }
+
+      if (!tg || !tg.MainButton) return;
+
+      if (itemCount === 0 || currentScreen === "success") {
+        tg.MainButton.hide();
+        return;
+      }
+
+      if (currentScreen === "catalog") {
+        tg.MainButton.setText(`View Cart (${itemCount}) • ${fmt(totalETB)} ETB`);
+        tg.MainButton.show();
+      } else if (currentScreen === "checkout") {
+        tg.MainButton.setText(`Confirm Order • ${fmt(totalETB)} ETB`);
+        tg.MainButton.show();
+      }
+    }
+
+    function openCheckout() {
+      const { totalETB, entries } = getCartTotals();
+      if (!entries.length) return;
+
+      currentScreen = "checkout";
+      document.getElementById("catalogView").classList.add("hidden");
+      document.getElementById("checkoutView").classList.remove("hidden");
+      document.getElementById("checkoutTotal").textContent = `${fmt(totalETB)} ETB`;
+
+      document.getElementById("checkoutItems").innerHTML = entries.map(e => `
+        <div class="py-2.5 flex justify-between items-center gap-2">
+          <div>
+            <div class="font-medium">${e.name}</div>
+            <div class="text-xs hint-text">${fmt(e.qty)} ${e.unit} × ${fmt(e.price)} ETB</div>
+          </div>
+          <div class="font-semibold">${fmt(e.lineTotal)} ETB</div>
+        </div>
+      `).join("");
+
+      if (tg && tg.BackButton) {
+        tg.BackButton.show();
+      }
+      updateMainButton();
+    }
+
+    function closeCheckout() {
+      currentScreen = "catalog";
+      document.getElementById("checkoutView").classList.add("hidden");
+      document.getElementById("catalogView").classList.remove("hidden");
+      if (tg && tg.BackButton) {
+        tg.BackButton.hide();
+      }
+      updateMainButton();
+    }
+
+    async function submitOrder() {
+      if (isSubmitting) return;
+      const { entries } = getCartTotals();
+      if (!entries.length) return;
+
+      const customerName = document.getElementById("inputName").value.trim();
+      const phone = document.getElementById("inputPhone").value.trim();
+      const location = document.getElementById("inputLocation").value.trim();
+      const notes = document.getElementById("inputNotes").value.trim();
+
+      if (phone.length < 7 || location.length < 3) {
+        const msg = "Please enter a valid phone number and delivery location.";
+        if (tg && tg.showAlert) tg.showAlert(msg);
+        else alert(msg);
+        return;
+      }
+
+      isSubmitting = true;
+      if (tg && tg.MainButton) tg.MainButton.showProgress();
+      document.getElementById("fallbackSubmitBtn").disabled = true;
+      document.getElementById("fallbackSubmitBtn").textContent = "Submitting Order...";
+
+      try {
+        // Use text/plain to avoid CORS preflight OPTIONS requests on Google Apps Script
+        const res = await fetch(API_URL, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          body: JSON.stringify({
+            action: "checkout",
+            cart: entries.map(e => ({ id: e.id, qty: e.qty })),
+            customerName,
+            phone,
+            location,
+            notes,
+            user: tgUser
+          })
+        });
+
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "Order failed");
+
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+        currentScreen = "success";
+        cart = {};
+        document.getElementById("checkoutView").classList.add("hidden");
+        document.getElementById("successView").classList.remove("hidden");
+        document.getElementById("confirmedOrderId").textContent = data.orderId;
+        if (tg && tg.BackButton) tg.BackButton.hide();
+        updateMainButton();
+      } catch (err) {
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
+        if (tg && tg.showAlert) tg.showAlert(err.message);
+        else alert(err.message);
+      } finally {
+        isSubmitting = false;
+        if (tg && tg.MainButton) tg.MainButton.hideProgress();
+        document.getElementById("fallbackSubmitBtn").disabled = false;
+        document.getElementById("fallbackSubmitBtn").textContent = "Confirm & Place Order";
+      }
+    }
+
+    function resetApp() {
+      currentScreen = "catalog";
+      document.getElementById("successView").classList.add("hidden");
+      document.getElementById("catalogView").classList.remove("hidden");
+      loadCatalog();
+      updateMainButton();
+    }
+
+    if (tg) {
+      tg.onEvent("mainButtonClicked", () => {
+        if (currentScreen === "catalog") openCheckout();
+        else if (currentScreen === "checkout") submitOrder();
+      });
+      tg.onEvent("backButtonClicked", () => {
+        if (currentScreen === "checkout") closeCheckout();
+      });
+    }
+
+    loadCatalog();
+  </script>
+</body>
+</html>
