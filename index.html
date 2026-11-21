@@ -35,6 +35,13 @@
       -webkit-appearance: none;
       margin: 0;
     }
+    @keyframes statusHighlight {
+      0% { transform: scale(0.985); box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.45); }
+      100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(37, 99, 235, 0); }
+    }
+    .order-just-updated {
+      animation: statusHighlight 1.6s ease-out;
+    }
   </style>
 </head>
 <body class="pb-28 select-none">
@@ -44,8 +51,8 @@
     const API_URL = "https://script.google.com/macros/s/AKfycbzbCBWPh82bDXjQ5GT0esMETuwz295OTAvDeE0eZ8gMfpbG2WAV--uCrNOKaAAsWsPV/exec";
   </script>
 
-  <!-- Floating Stock Warning Banner -->
-  <div id="stockBanner" class="hidden fixed top-3 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full bg-amber-600 text-white text-xs font-bold shadow-lg pointer-events-none transition-opacity">
+  <!-- Floating Stock / Status Notification Banner -->
+  <div id="stockBanner" class="hidden fixed top-3 left-1/2 -translate-x-1/2 z-50 max-w-[92vw] px-4 py-2.5 rounded-2xl bg-amber-600 text-white text-xs font-bold shadow-xl pointer-events-none transition-all text-center">
   </div>
 
   <!-- Header -->
@@ -67,8 +74,9 @@
         🏗️ Shop
       </button>
       <button id="tabOrdersBtn" onclick="switchTab('orders')"
-        class="py-1.5 rounded-lg text-xs font-semibold hint-text transition">
-        🧾 My Orders
+        class="relative py-1.5 rounded-lg text-xs font-semibold hint-text transition flex items-center justify-center gap-1.5">
+        <span>🧾 My Orders</span>
+        <span id="ordersUpdateDot" class="hidden w-2 h-2 rounded-full bg-blue-500 animate-ping"></span>
       </button>
     </div>
 
@@ -136,9 +144,15 @@
   <!-- My Orders View -->
   <section id="ordersView" class="hidden p-4 space-y-3">
     <div class="flex items-center justify-between">
-      <h2 class="text-base font-bold">Recent Orders</h2>
-      <button onclick="loadOrders()" class="text-xs font-semibold text-blue-500 px-2.5 py-1 rounded-lg bg-blue-500/10 active:scale-95 transition">
-        ↻ Refresh Status
+      <div>
+        <h2 class="text-base font-bold">Recent Orders</h2>
+        <p id="ordersLiveIndicator" class="text-[11px] hint-text flex items-center gap-1.5">
+          <span class="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+          <span>Live status updates active</span>
+        </p>
+      </div>
+      <button onclick="loadOrders({ manual: true })" class="text-xs font-semibold text-blue-500 px-2.5 py-1.5 rounded-lg bg-blue-500/10 active:scale-95 transition">
+        ↻ Refresh
       </button>
     </div>
     <div id="ordersLoadingState" class="hidden text-center py-10 hint-text text-sm">
@@ -207,13 +221,13 @@
     <h2 class="text-xl font-bold">Order Confirmed!</h2>
     <p class="text-sm hint-text">
       Order ID: <span id="confirmedOrderId" class="font-mono font-bold text-blue-500"></span><br/>
-      A receipt has been sent to your Telegram chat. You can cancel within <strong>10 minutes</strong> inside <em>My Orders</em> if needed.
+      A receipt has been sent to your Telegram chat. Track live progress or cancel within <strong>10 minutes</strong> in <em>My Orders</em>.
     </p>
     <div class="flex flex-col sm:flex-row items-center justify-center gap-2.5 pt-2">
-      <button onclick="switchTab('orders')" class="w-full sm:w-auto px-5 py-3 rounded-xl font-semibold text-sm bg-black/10">
-        🧾 View My Orders
+      <button onclick="switchTab('orders')" class="w-full sm:w-auto accent-btn px-5 py-3 rounded-xl font-semibold text-sm shadow">
+        🧾 Track Order Status
       </button>
-      <button onclick="resetApp()" class="w-full sm:w-auto accent-btn px-6 py-3 rounded-xl font-semibold text-sm shadow">
+      <button onclick="resetApp()" class="w-full sm:w-auto px-6 py-3 rounded-xl font-semibold text-sm bg-black/10">
         Place Another Order
       </button>
     </div>
@@ -228,13 +242,18 @@
 
     let catalog = [];
     let recentOrders = [];
+    let knownOrderStatuses = {}; // { [orderId]: status }
+    let newlyChangedOrderIds = new Set();
+
     // cart keyed by "itemId::variant" -> { id, variant, qty }
     let cart = {};
     let selectedCategory = "All";
     let currentScreen = "catalog"; // "catalog" | "orders" | "checkout" | "success"
     let isSubmitting = false;
+    let isFetchingOrders = false;
     let cancellingOrderId = null;
     let cancelCountdownInterval = null;
+    let orderPollInterval = null;
 
     // Multi-variant modal state: { [variantLabel]: qty }
     let modalItem = null;
@@ -265,15 +284,21 @@
       });
     }
 
-    function flashStockWarning(msg) {
+    function flashBanner(msg, colorClass = "bg-amber-600", hapticType = "warning", durationMs = 2400) {
       const el = document.getElementById("stockBanner");
       el.textContent = msg;
-      el.classList.remove("hidden");
-      if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("warning");
+      el.className = `fixed top-3 left-1/2 -translate-x-1/2 z-50 max-w-[92vw] px-4 py-2.5 rounded-2xl ${colorClass} text-white text-xs font-bold shadow-xl pointer-events-none transition-all text-center`;
+      if (tg && tg.HapticFeedback && hapticType) {
+        tg.HapticFeedback.notificationOccurred(hapticType);
+      }
       clearTimeout(bannerTimer);
       bannerTimer = setTimeout(() => {
         el.classList.add("hidden");
-      }, 2200);
+      }, durationMs);
+    }
+
+    function flashStockWarning(msg) {
+      flashBanner(msg, "bg-amber-600", "warning", 2200);
     }
 
     function getOptionObj(item, variantLabel) {
@@ -397,6 +422,18 @@
       return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
     }
 
+    function startOrderStatusPolling() {
+      if (orderPollInterval) clearInterval(orderPollInterval);
+      orderPollInterval = setInterval(() => {
+        if (document.hidden) return;
+        const hasIdentity = Boolean(tgUser.id) || getLocalOrderIds().length > 0;
+        if (!hasIdentity) return;
+
+        // Poll silently in the background; re-render immediately if on Orders screen
+        loadOrders({ silent: true });
+      }, 12000);
+    }
+
     function switchTab(tab) {
       currentScreen = tab;
       const shopBtn = document.getElementById("tabShopBtn");
@@ -411,15 +448,16 @@
       if (tg && tg.BackButton) tg.BackButton.hide();
 
       if (tab === "orders") {
-        ordersBtn.className = "accent-btn py-1.5 rounded-lg text-xs font-bold shadow-sm transition";
+        document.getElementById("ordersUpdateDot").classList.add("hidden");
+        ordersBtn.className = "relative accent-btn py-1.5 rounded-lg text-xs font-bold shadow-sm transition flex items-center justify-center gap-1.5";
         shopBtn.className = "py-1.5 rounded-lg text-xs font-semibold hint-text transition";
         shopControls.classList.add("hidden");
         document.getElementById("ordersView").classList.remove("hidden");
-        loadOrders();
+        loadOrders({ manual: true });
       } else {
         stopCancelCountdownTimer();
         shopBtn.className = "accent-btn py-1.5 rounded-lg text-xs font-bold shadow-sm transition";
-        ordersBtn.className = "py-1.5 rounded-lg text-xs font-semibold hint-text transition";
+        ordersBtn.className = "relative py-1.5 rounded-lg text-xs font-semibold hint-text transition flex items-center justify-center gap-1.5";
         shopControls.classList.remove("hidden");
         document.getElementById("catalogView").classList.remove("hidden");
       }
@@ -460,13 +498,19 @@
       }
     }
 
-    async function loadOrders() {
+    async function loadOrders(opts = {}) {
+      if (isFetchingOrders) return;
+      const silent = Boolean(opts.silent);
       const loadingEl = document.getElementById("ordersLoadingState");
       const listEl = document.getElementById("ordersList");
-      stopCancelCountdownTimer();
-      loadingEl.classList.remove("hidden");
-      listEl.innerHTML = "";
 
+      if (!silent && !recentOrders.length) {
+        stopCancelCountdownTimer();
+        loadingEl.classList.remove("hidden");
+        listEl.innerHTML = "";
+      }
+
+      isFetchingOrders = true;
       try {
         const chatId = tgUser.id ? String(tgUser.id) : "";
         const localIds = getLocalOrderIds().join(",");
@@ -476,8 +520,17 @@
         if (!data.ok) throw new Error(data.error || "Failed to load orders");
 
         const fetchedAt = Date.now();
+        const changedAnnouncements = [];
+        newlyChangedOrderIds.clear();
+
         recentOrders = (data.orders || []).map(ord => {
-          // Anchor deadline relative to client clock using server's remaining seconds
+          const prevStatus = knownOrderStatuses[ord.orderId];
+          if (prevStatus && prevStatus !== ord.status) {
+            newlyChangedOrderIds.add(ord.orderId);
+            changedAnnouncements.push({ orderId: ord.orderId, status: ord.status });
+          }
+          knownOrderStatuses[ord.orderId] = ord.status;
+
           const clientDeadline = ord.canCancel && ord.secondsLeft > 0
             ? (fetchedAt + ord.secondsLeft * 1000)
             : 0;
@@ -485,24 +538,135 @@
         });
 
         loadingEl.classList.add("hidden");
-        renderOrders(recentOrders);
+
+        if (changedAnnouncements.length > 0) {
+          const latest = changedAnnouncements[0];
+          const meta = getStatusPresentation(latest.status);
+          flashBanner(
+            `${meta.icon} Order ${latest.orderId} is now ${latest.status}!`,
+            meta.bannerBg,
+            latest.status === "Cancelled" ? "error" : "success",
+            3600
+          );
+          if (currentScreen !== "orders") {
+            document.getElementById("ordersUpdateDot").classList.remove("hidden");
+          }
+        }
+
+        if (currentScreen === "orders") {
+          renderOrders(recentOrders);
+        }
       } catch (err) {
         loadingEl.classList.add("hidden");
-        listEl.innerHTML = `<div class="text-center py-8 text-red-500 text-sm">${escapeHtml(err.message)}</div>`;
+        if (!silent) {
+          listEl.innerHTML = `<div class="text-center py-8 text-red-500 text-sm">${escapeHtml(err.message)}</div>`;
+        }
+      } finally {
+        isFetchingOrders = false;
       }
     }
 
-    function getStatusBadgeHtml(status) {
+    /**
+     * Returns status-tailored UI metadata: colors, icon, customer guidance message, and progress step index.
+     */
+    function getStatusPresentation(status) {
       const s = String(status || "Pending").trim();
-      const map = {
-        "Pending": "bg-amber-500/15 text-amber-600",
-        "Confirmed": "bg-blue-500/15 text-blue-600",
-        "Out for Delivery": "bg-purple-500/15 text-purple-600",
-        "Delivered": "bg-emerald-500/15 text-emerald-600",
-        "Cancelled": "bg-red-500/15 text-red-600"
-      };
-      const cls = map[s] || "bg-black/10 hint-text";
-      return `<span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold ${cls}">${escapeHtml(s)}</span>`;
+      switch (s) {
+        case "Confirmed":
+          return {
+            stepIndex: 1,
+            icon: "✅",
+            badgeCls: "bg-blue-500/15 text-blue-600",
+            cardBorderCls: "border-blue-500/30",
+            boxCls: "bg-blue-500/10 border-blue-500/20 text-blue-700 dark:text-blue-300",
+            bannerBg: "bg-blue-600",
+            headline: "Order Confirmed — Preparing Materials",
+            description: "Your items are confirmed and being prepared for loading at our warehouse."
+          };
+        case "Out for Delivery":
+          return {
+            stepIndex: 2,
+            icon: "🚚",
+            badgeCls: "bg-purple-500/15 text-purple-600",
+            cardBorderCls: "border-purple-500/40",
+            boxCls: "bg-purple-500/10 border-purple-500/25 text-purple-700 dark:text-purple-300",
+            bannerBg: "bg-purple-600",
+            headline: "Out for Delivery — Driver En Route",
+            description: "Your materials are on the way to your site! Please keep your phone available for our driver.",
+            pulse: true
+          };
+        case "Delivered":
+          return {
+            stepIndex: 3,
+            icon: "🎉",
+            badgeCls: "bg-emerald-500/15 text-emerald-600",
+            cardBorderCls: "border-emerald-500/30",
+            boxCls: "bg-emerald-500/10 border-emerald-500/20 text-emerald-700 dark:text-emerald-300",
+            bannerBg: "bg-emerald-600",
+            headline: "Delivered to Your Site",
+            description: "Order completed. Thank you for building with Solomon Building Materials!"
+          };
+        case "Cancelled":
+          return {
+            stepIndex: -1,
+            icon: "❌",
+            badgeCls: "bg-red-500/15 text-red-600",
+            cardBorderCls: "border-red-500/25",
+            boxCls: "bg-red-500/10 border-red-500/20 text-red-700 dark:text-red-300",
+            bannerBg: "bg-red-600",
+            headline: "Order Cancelled",
+            description: "This order was cancelled and reserved stock has been released. You can reorder anytime below."
+          };
+        default: // "Pending"
+          return {
+            stepIndex: 0,
+            icon: "⏳",
+            badgeCls: "bg-amber-500/15 text-amber-600",
+            cardBorderCls: "border-amber-500/30",
+            boxCls: "bg-amber-500/10 border-amber-500/20 text-amber-800 dark:text-amber-300",
+            bannerBg: "bg-amber-600",
+            headline: "Order Received — Awaiting Confirmation",
+            description: "We received your request and will confirm stock & dispatch time shortly."
+          };
+      }
+    }
+
+    function renderOrderProgressStepperHtml(meta) {
+      if (meta.stepIndex < 0) return ""; // Cancelled orders show the red callout instead of delivery steps
+
+      const steps = [
+        { label: "Received", icon: "⏳" },
+        { label: "Confirmed", icon: "✅" },
+        { label: "On the Way", icon: "🚚" },
+        { label: "Delivered", icon: "🎉" }
+      ];
+
+      const activeBarColors = [
+        "bg-amber-500",
+        "bg-blue-600",
+        "bg-purple-600",
+        "bg-emerald-600"
+      ];
+      const fillColor = activeBarColors[meta.stepIndex] || "bg-blue-600";
+
+      return `
+        <div class="pt-1 pb-0.5">
+          <div class="grid grid-cols-4 gap-1.5">
+            ${steps.map((st, idx) => {
+              const reached = idx <= meta.stepIndex;
+              const isCurrent = idx === meta.stepIndex;
+              return `
+                <div class="flex flex-col items-center text-center">
+                  <div class="w-full h-1.5 rounded-full transition-all ${reached ? fillColor : "bg-black/10"} ${isCurrent && meta.pulse ? "animate-pulse" : ""}"></div>
+                  <span class="mt-1 text-[10px] leading-tight ${isCurrent ? "font-bold" : (reached ? "font-medium opacity-80" : "hint-text opacity-60")}">
+                    ${st.label}
+                  </span>
+                </div>
+              `;
+            }).join("")}
+          </div>
+        </div>
+      `;
     }
 
     function renderOrders(orders) {
@@ -526,6 +690,9 @@
 
       listEl.innerHTML = orders.map(ord => {
         const safeOrderId = escapeHtml(ord.orderId).replace(/'/g, "\\'");
+        const meta = getStatusPresentation(ord.status);
+        const justChanged = newlyChangedOrderIds.has(ord.orderId);
+
         const remainingSec = ord.canCancel && ord.clientDeadlineMs > now
           ? Math.ceil((ord.clientDeadlineMs - now) / 1000)
           : 0;
@@ -540,25 +707,46 @@
           .join("");
 
         return `
-          <div class="card-surface rounded-2xl p-4 shadow-sm space-y-2.5">
+          <div class="card-surface rounded-2xl p-4 shadow-sm space-y-3 border ${meta.cardBorderCls} ${justChanged ? "order-just-updated" : ""}">
+            <!-- Header Row -->
             <div class="flex items-center justify-between gap-2">
               <div>
                 <span class="font-mono font-bold text-xs text-blue-500">${escapeHtml(ord.orderId)}</span>
                 <div class="text-[11px] hint-text">${escapeHtml(ord.date)}</div>
               </div>
-              ${getStatusBadgeHtml(ord.status)}
+              <span class="px-2.5 py-1 rounded-full text-[11px] font-bold flex items-center gap-1 ${meta.badgeCls}">
+                <span>${meta.icon}</span>
+                <span>${escapeHtml(ord.status)}</span>
+              </span>
             </div>
 
+            <!-- Visual 4-Step Progress Tracker -->
+            ${renderOrderProgressStepperHtml(meta)}
+
+            <!-- Status-Tailored Explanation Banner -->
+            <div class="rounded-xl border px-3 py-2.5 text-xs space-y-0.5 ${meta.boxCls}">
+              <div class="font-bold flex items-center gap-1.5">
+                <span>${meta.icon}</span>
+                <span>${escapeHtml(meta.headline)}</span>
+              </div>
+              <p class="text-[11px] opacity-90 leading-snug">
+                ${escapeHtml(meta.description)}
+              </p>
+            </div>
+
+            <!-- Ordered Items -->
             <ul class="space-y-1 pt-1 border-t border-black/5">
               ${itemsHtml}
             </ul>
 
+            <!-- Destination & Total -->
             <div class="pt-2 border-t border-black/5 flex items-center justify-between gap-2 text-xs">
               <span class="hint-text truncate max-w-[55%]">📍 ${escapeHtml(ord.contact)}</span>
               <span class="font-bold text-sm">${fmt(ord.total)} ETB</span>
             </div>
 
-            <div class="pt-1 flex flex-col gap-1.5">
+            <!-- Actions -->
+            <div class="pt-0.5 flex flex-col gap-1.5">
               <button onclick="reorderPastOrder('${safeOrderId}')"
                 class="w-full py-2 rounded-xl text-xs font-bold bg-blue-500/10 text-blue-600 hover:bg-blue-500/15 active:scale-95 transition flex items-center justify-center gap-1.5">
                 ↻ Reorder These Items
@@ -612,11 +800,11 @@
 
         if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
         showToast(`Order ${orderId} has been cancelled.`);
-        await Promise.all([loadOrders(), loadCatalog()]);
+        await Promise.all([loadOrders({ manual: true }), loadCatalog()]);
       } catch (err) {
         if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
         showToast(err.message);
-        await loadOrders();
+        await loadOrders({ manual: true });
       } finally {
         cancellingOrderId = null;
       }
@@ -1452,6 +1640,7 @@
         }
 
         saveLocalOrderId(data.orderId);
+        knownOrderStatuses[data.orderId] = "Pending";
         if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
         currentScreen = "success";
         cart = {};
@@ -1487,6 +1676,8 @@
     }
 
     loadCatalog();
+    loadOrders({ silent: true });
+    startOrderStatusPolling();
   </script>
 </body>
 </html>
