@@ -56,28 +56,54 @@
       </button>
     </div>
 
-    <!-- Search Bar -->
-    <div class="mt-2.5">
-      <input
-        id="searchInput"
-        type="text"
-        placeholder="Search cement, rebar, sand, blocks..."
-        oninput="renderCatalog()"
-        class="w-full rounded-xl px-3.5 py-2 text-sm bg-black/5 focus:outline-none focus:ring-2 focus:ring-blue-500"
-      />
+    <!-- Navigation Tabs: Shop vs My Orders -->
+    <div class="mt-2.5 grid grid-cols-2 gap-1.5 bg-black/5 p-1 rounded-xl">
+      <button id="tabShopBtn" onclick="switchTab('catalog')"
+        class="accent-btn py-1.5 rounded-lg text-xs font-bold shadow-sm transition">
+        🏗️ Shop
+      </button>
+      <button id="tabOrdersBtn" onclick="switchTab('orders')"
+        class="py-1.5 rounded-lg text-xs font-semibold hint-text transition">
+        🧾 My Orders
+      </button>
     </div>
 
-    <!-- Category Filter Pills -->
-    <div id="categoryBar" class="mt-2.5 flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5"></div>
+    <!-- Search & Categories (Visible only on Shop tab) -->
+    <div id="shopControls">
+      <div class="mt-2.5">
+        <input
+          id="searchInput"
+          type="text"
+          placeholder="Search cement, rebar, sand, blocks..."
+          oninput="renderCatalog()"
+          class="w-full rounded-xl px-3.5 py-2 text-sm bg-black/5 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+      </div>
+      <div id="categoryBar" class="mt-2.5 flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5"></div>
+    </div>
   </header>
 
-  <!-- Catalog View -->
-  <main id="catalogView" class="p-4 space-y-3">
+  <!-- Catalog View (Grid Layout) -->
+  <main id="catalogView" class="p-3">
     <div id="loadingState" class="text-center py-12 hint-text text-sm">
       Loading live materials &amp; stock...
     </div>
-    <div id="catalogList" class="space-y-3"></div>
+    <div id="catalogList" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3"></div>
   </main>
+
+  <!-- My Orders View -->
+  <section id="ordersView" class="hidden p-4 space-y-3">
+    <div class="flex items-center justify-between">
+      <h2 class="text-base font-bold">Recent Orders</h2>
+      <button onclick="loadOrders()" class="text-xs font-semibold text-blue-500 px-2.5 py-1 rounded-lg bg-blue-500/10 active:scale-95 transition">
+        ↻ Refresh Status
+      </button>
+    </div>
+    <div id="ordersLoadingState" class="hidden text-center py-10 hint-text text-sm">
+      Checking your orders...
+    </div>
+    <div id="ordersList" class="space-y-3"></div>
+  </section>
 
   <!-- Checkout View -->
   <section id="checkoutView" class="hidden p-4 space-y-4">
@@ -141,9 +167,14 @@
       Order ID: <span id="confirmedOrderId" class="font-mono font-bold text-blue-500"></span><br/>
       A receipt has been sent to your Telegram chat. We will call you shortly to arrange delivery.
     </p>
-    <button onclick="resetApp()" class="accent-btn px-6 py-3 rounded-xl font-semibold text-sm shadow">
-      Place Another Order
-    </button>
+    <div class="flex flex-col sm:flex-row items-center justify-center gap-2.5 pt-2">
+      <button onclick="switchTab('orders')" class="w-full sm:w-auto px-5 py-3 rounded-xl font-semibold text-sm bg-black/10">
+        🧾 View My Orders
+      </button>
+      <button onclick="resetApp()" class="w-full sm:w-auto accent-btn px-6 py-3 rounded-xl font-semibold text-sm shadow">
+        Place Another Order
+      </button>
+    </div>
   </section>
 
   <script>
@@ -156,12 +187,60 @@
     let catalog = [];
     let cart = {}; // { itemId: qty }
     let selectedCategory = "All";
-    let currentScreen = "catalog"; // "catalog" | "checkout" | "success"
+    let currentScreen = "catalog"; // "catalog" | "orders" | "checkout" | "success"
     let isSubmitting = false;
 
     const tgUser = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) ? tg.initDataUnsafe.user : {};
     if (tgUser.first_name) {
       document.getElementById("inputName").value = [tgUser.first_name, tgUser.last_name].filter(Boolean).join(" ");
+    }
+
+    function getLocalOrderIds() {
+      try {
+        return JSON.parse(localStorage.getItem("sol_order_ids") || "[]");
+      } catch (e) {
+        return [];
+      }
+    }
+
+    function saveLocalOrderId(orderId) {
+      try {
+        const list = getLocalOrderIds();
+        if (!list.includes(orderId)) {
+          list.unshift(orderId);
+          localStorage.setItem("sol_order_ids", JSON.stringify(list.slice(0, 20)));
+        }
+      } catch (e) {}
+    }
+
+    function switchTab(tab) {
+      currentScreen = tab;
+      const shopBtn = document.getElementById("tabShopBtn");
+      const ordersBtn = document.getElementById("tabOrdersBtn");
+      const shopControls = document.getElementById("shopControls");
+
+      document.getElementById("catalogView").classList.add("hidden");
+      document.getElementById("ordersView").classList.add("hidden");
+      document.getElementById("checkoutView").classList.add("hidden");
+      document.getElementById("successView").classList.add("hidden");
+
+      if (tg && tg.BackButton) tg.BackButton.hide();
+
+      if (tab === "orders") {
+        ordersBtn.className = "accent-btn py-1.5 rounded-lg text-xs font-bold shadow-sm transition";
+        shopBtn.className = "py-1.5 rounded-lg text-xs font-semibold hint-text transition";
+        shopControls.classList.add("hidden");
+        document.getElementById("ordersView").classList.remove("hidden");
+        loadOrders();
+      } else {
+        shopBtn.className = "accent-btn py-1.5 rounded-lg text-xs font-bold shadow-sm transition";
+        ordersBtn.className = "py-1.5 rounded-lg text-xs font-semibold hint-text transition";
+        shopControls.classList.remove("hidden");
+        document.getElementById("catalogView").classList.remove("hidden");
+      }
+
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+      updateMainButton();
     }
 
     async function loadCatalog() {
@@ -177,6 +256,88 @@
         document.getElementById("loadingState").innerHTML =
           `<div class="text-red-500 font-medium">Could not load catalog.<br><span class="text-xs">${escapeHtml(err.message)}</span></div>`;
       }
+    }
+
+    async function loadOrders() {
+      const loadingEl = document.getElementById("ordersLoadingState");
+      const listEl = document.getElementById("ordersList");
+      loadingEl.classList.remove("hidden");
+      listEl.innerHTML = "";
+
+      try {
+        const chatId = tgUser.id ? String(tgUser.id) : "";
+        const localIds = getLocalOrderIds().join(",");
+        const url = `${API_URL}?action=orders&chatId=${encodeURIComponent(chatId)}&orderIds=${encodeURIComponent(localIds)}`;
+        const res = await fetch(url);
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "Failed to load orders");
+
+        loadingEl.classList.add("hidden");
+        renderOrders(data.orders || []);
+      } catch (err) {
+        loadingEl.classList.add("hidden");
+        listEl.innerHTML = `<div class="text-center py-8 text-red-500 text-sm">${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    function getStatusBadgeHtml(status) {
+      const s = String(status || "Pending").trim();
+      const map = {
+        "Pending": "bg-amber-500/15 text-amber-600",
+        "Confirmed": "bg-blue-500/15 text-blue-600",
+        "Out for Delivery": "bg-purple-500/15 text-purple-600",
+        "Delivered": "bg-emerald-500/15 text-emerald-600",
+        "Cancelled": "bg-red-500/15 text-red-600"
+      };
+      const cls = map[s] || "bg-black/10 hint-text";
+      return `<span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold ${cls}">${escapeHtml(s)}</span>`;
+    }
+
+    function renderOrders(orders) {
+      const listEl = document.getElementById("ordersList");
+      if (!orders.length) {
+        listEl.innerHTML = `
+          <div class="card-surface rounded-2xl p-8 text-center space-y-3 shadow-sm">
+            <div class="text-3xl">📦</div>
+            <div class="font-semibold text-sm">No orders yet</div>
+            <p class="text-xs hint-text">Once you place an order, you can track its live delivery status here.</p>
+            <button onclick="switchTab('catalog')" class="accent-btn px-4 py-2 rounded-xl text-xs font-semibold">
+              Browse Materials
+            </button>
+          </div>
+        `;
+        return;
+      }
+
+      listEl.innerHTML = orders.map(ord => {
+        const itemsHtml = ord.summary
+          .split(";")
+          .map(s => s.trim())
+          .filter(Boolean)
+          .map(line => `<li class="text-xs leading-relaxed">• ${escapeHtml(line)}</li>`)
+          .join("");
+
+        return `
+          <div class="card-surface rounded-2xl p-4 shadow-sm space-y-2.5">
+            <div class="flex items-center justify-between gap-2">
+              <div>
+                <span class="font-mono font-bold text-xs text-blue-500">${escapeHtml(ord.orderId)}</span>
+                <div class="text-[11px] hint-text">${escapeHtml(ord.date)}</div>
+              </div>
+              ${getStatusBadgeHtml(ord.status)}
+            </div>
+
+            <ul class="space-y-1 pt-1 border-t border-black/5">
+              ${itemsHtml}
+            </ul>
+
+            <div class="pt-2 border-t border-black/5 flex items-center justify-between text-xs">
+              <span class="hint-text truncate max-w-[60%]">📍 ${escapeHtml(ord.contact)}</span>
+              <span class="font-bold text-sm">${fmt(ord.total)} ETB</span>
+            </div>
+          </div>
+        `;
+      }).join("");
     }
 
     function escapeHtml(str) {
@@ -295,7 +456,7 @@
       });
 
       if (!filtered.length) {
-        container.innerHTML = `<div class="text-center py-8 hint-text text-sm">No matching materials found.</div>`;
+        container.innerHTML = `<div class="col-span-full text-center py-10 hint-text text-sm">No matching materials found.</div>`;
         return;
       }
 
@@ -303,9 +464,10 @@
         const qty = cart[item.id] || 0;
         const lowStock = item.stock <= 10;
         const fallbackIcon = getCategoryFallbackIcon(item.category);
+        const safeId = escapeHtml(item.id).replace(/'/g, "\\'");
 
         const mediaHtml = item.imageUrl ? `
-          <div class="w-16 h-16 rounded-xl overflow-hidden bg-black/5 shrink-0 flex items-center justify-center relative">
+          <div class="relative w-full aspect-[4/3] bg-black/5 overflow-hidden flex items-center justify-center">
             <img
               src="${escapeHtml(item.imageUrl)}"
               alt="${escapeHtml(item.name)}"
@@ -313,51 +475,60 @@
               onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"
               class="w-full h-full object-cover"
             />
-            <div style="display:none" class="w-full h-full items-center justify-center text-2xl">
+            <div style="display:none" class="w-full h-full items-center justify-center text-3xl">
               ${fallbackIcon}
             </div>
+            <span class="absolute bottom-1.5 right-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold backdrop-blur-md ${lowStock ? "bg-amber-500/90 text-white" : "bg-black/60 text-white"}">
+              ${fmt(item.stock)} ${escapeHtml(item.unit)}
+            </span>
           </div>
         ` : `
-          <div class="w-14 h-14 rounded-xl bg-black/5 shrink-0 flex items-center justify-center text-2xl">
+          <div class="relative w-full aspect-[4/3] bg-black/5 flex items-center justify-center text-4xl">
             ${fallbackIcon}
+            <span class="absolute bottom-1.5 right-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold ${lowStock ? "bg-amber-500 text-white" : "bg-black/60 text-white"}">
+              ${fmt(item.stock)} ${escapeHtml(item.unit)}
+            </span>
           </div>
         `;
 
         return `
-          <div class="card-surface rounded-2xl p-3.5 shadow-sm flex items-center justify-between gap-3">
-            ${mediaHtml}
+          <div class="card-surface rounded-2xl overflow-hidden shadow-sm flex flex-col justify-between border border-black/5 ${qty > 0 ? "ring-2 ring-blue-500" : ""}">
+            <div>
+              ${mediaHtml}
 
-            <div class="min-w-0 flex-1">
-              <div class="text-[10px] uppercase tracking-wider font-semibold hint-text">
-                ${escapeHtml(item.category || "General")}
-              </div>
-              <div class="font-semibold text-sm leading-snug line-clamp-2">${escapeHtml(item.name)}</div>
-              <div class="text-sm font-bold text-blue-600 mt-0.5">
-                ${fmt(item.price)} ETB <span class="text-xs font-normal hint-text">/ ${escapeHtml(item.unit)}</span>
-              </div>
-              <div class="text-xs mt-0.5 ${lowStock ? "text-amber-600 font-medium" : "hint-text"}">
-                ${fmt(item.stock)} ${escapeHtml(item.unit)} left
+              <div class="p-2.5 pb-1">
+                <div class="text-[10px] uppercase tracking-wider font-semibold hint-text truncate">
+                  ${escapeHtml(item.category || "General")}
+                </div>
+                <h3 class="font-semibold text-xs leading-snug line-clamp-2 min-h-[2.1rem] mt-0.5">
+                  ${escapeHtml(item.name)}
+                </h3>
+                <div class="text-sm font-bold text-blue-600 mt-1">
+                  ${fmt(item.price)} <span class="text-[11px] font-normal hint-text">ETB / ${escapeHtml(item.unit)}</span>
+                </div>
               </div>
             </div>
 
-            <div class="flex items-center gap-1 shrink-0">
+            <div class="p-2.5 pt-1.5">
               ${qty === 0 ? `
-                <button onclick="updateQty('${escapeHtml(item.id)}', 1)"
-                  class="accent-btn px-3.5 py-2 rounded-xl text-xs font-semibold shadow-sm active:scale-95 transition">
+                <button onclick="updateQty('${safeId}', 1)"
+                  class="w-full accent-btn py-2 rounded-xl text-xs font-semibold shadow-sm active:scale-95 transition">
                   + Add
                 </button>
               ` : `
-                <button onclick="updateQty('${escapeHtml(item.id)}', -1)"
-                  class="w-7 h-7 rounded-lg bg-black/10 font-bold text-sm flex items-center justify-center active:scale-95">
-                  −
-                </button>
-                <input type="number" step="any" min="0" max="${item.stock}" value="${qty}"
-                  onchange="setExactQty('${escapeHtml(item.id)}', this.value)"
-                  class="w-12 text-center font-bold text-xs bg-black/5 rounded-lg py-1.5 focus:outline-none" />
-                <button onclick="updateQty('${escapeHtml(item.id)}', 1)"
-                  class="w-7 h-7 rounded-lg accent-btn font-bold text-sm flex items-center justify-center active:scale-95">
-                  +
-                </button>
+                <div class="flex items-center justify-between gap-1 bg-black/5 rounded-xl p-1">
+                  <button onclick="updateQty('${safeId}', -1)"
+                    class="w-7 h-7 rounded-lg bg-white/80 dark:bg-black/20 font-bold text-sm flex items-center justify-center active:scale-95 shadow-sm">
+                    −
+                  </button>
+                  <input type="number" step="any" min="0" max="${item.stock}" value="${qty}"
+                    onchange="setExactQty('${safeId}', this.value)"
+                    class="w-full min-w-0 text-center font-bold text-xs bg-transparent focus:outline-none" />
+                  <button onclick="updateQty('${safeId}', 1)"
+                    class="w-7 h-7 rounded-lg accent-btn font-bold text-sm flex items-center justify-center active:scale-95 shadow-sm">
+                    +
+                  </button>
+                </div>
               `}
             </div>
           </div>
@@ -378,7 +549,7 @@
 
       if (!tg || !tg.MainButton) return;
 
-      if (itemCount === 0 || currentScreen === "success") {
+      if (itemCount === 0 || currentScreen === "success" || currentScreen === "orders") {
         tg.MainButton.hide();
         return;
       }
@@ -397,7 +568,9 @@
       if (!entries.length) return;
 
       currentScreen = "checkout";
+      document.getElementById("shopControls").classList.add("hidden");
       document.getElementById("catalogView").classList.add("hidden");
+      document.getElementById("ordersView").classList.add("hidden");
       document.getElementById("checkoutView").classList.remove("hidden");
       document.getElementById("checkoutTotal").textContent = `${fmt(totalETB)} ETB`;
 
@@ -418,13 +591,7 @@
     }
 
     function closeCheckout() {
-      currentScreen = "catalog";
-      document.getElementById("checkoutView").classList.add("hidden");
-      document.getElementById("catalogView").classList.remove("hidden");
-      if (tg && tg.BackButton) {
-        tg.BackButton.hide();
-      }
-      updateMainButton();
+      switchTab("catalog");
     }
 
     async function submitOrder() {
@@ -467,6 +634,7 @@
         const data = await res.json();
         if (!data.ok) throw new Error(data.error || "Order failed");
 
+        saveLocalOrderId(data.orderId);
         if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
         currentScreen = "success";
         cart = {};
@@ -488,11 +656,8 @@
     }
 
     function resetApp() {
-      currentScreen = "catalog";
-      document.getElementById("successView").classList.add("hidden");
-      document.getElementById("catalogView").classList.remove("hidden");
+      switchTab("catalog");
       loadCatalog();
-      updateMainButton();
     }
 
     if (tg) {
