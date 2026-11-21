@@ -207,7 +207,7 @@
     <h2 class="text-xl font-bold">Order Confirmed!</h2>
     <p class="text-sm hint-text">
       Order ID: <span id="confirmedOrderId" class="font-mono font-bold text-blue-500"></span><br/>
-      A receipt has been sent to your Telegram chat. We will call you shortly to arrange delivery.
+      A receipt has been sent to your Telegram chat. You can cancel within <strong>10 minutes</strong> inside <em>My Orders</em> if needed.
     </p>
     <div class="flex flex-col sm:flex-row items-center justify-center gap-2.5 pt-2">
       <button onclick="switchTab('orders')" class="w-full sm:w-auto px-5 py-3 rounded-xl font-semibold text-sm bg-black/10">
@@ -233,6 +233,8 @@
     let selectedCategory = "All";
     let currentScreen = "catalog"; // "catalog" | "orders" | "checkout" | "success"
     let isSubmitting = false;
+    let cancellingOrderId = null;
+    let cancelCountdownInterval = null;
 
     // Multi-variant modal state: { [variantLabel]: qty }
     let modalItem = null;
@@ -251,6 +253,16 @@
     function showToast(msg) {
       if (tg && tg.showAlert) tg.showAlert(msg);
       else alert(msg);
+    }
+
+    function confirmAction(msg) {
+      return new Promise(resolve => {
+        if (tg && tg.showConfirm) {
+          tg.showConfirm(msg, ok => resolve(Boolean(ok)));
+        } else {
+          resolve(window.confirm(msg));
+        }
+      });
     }
 
     function flashStockWarning(msg) {
@@ -278,10 +290,6 @@
       return Number(item.price) || 0;
     }
 
-    /**
-     * Strictly computes the maximum allowed quantity for (item, variantLabel),
-     * accounting for both per-option stock and shared item stock across other lines in `sourceMap`.
-     */
     function getMaxStockForVariant(item, variantLabel, sourceMap = cart) {
       if (!item) return 0;
       const itemTotalStock = Math.max(0, roundQty(Number(item.stock) || 0));
@@ -345,6 +353,50 @@
       } catch (e) {}
     }
 
+    function stopCancelCountdownTimer() {
+      if (cancelCountdownInterval) {
+        clearInterval(cancelCountdownInterval);
+        cancelCountdownInterval = null;
+      }
+    }
+
+    function startCancelCountdownTimer() {
+      stopCancelCountdownTimer();
+      cancelCountdownInterval = setInterval(() => {
+        if (currentScreen !== "orders") {
+          stopCancelCountdownTimer();
+          return;
+        }
+        const now = Date.now();
+        let anyActive = false;
+
+        document.querySelectorAll("[data-cancel-deadline]").forEach(btn => {
+          const deadline = Number(btn.getAttribute("data-cancel-deadline")) || 0;
+          const remainingSec = Math.max(0, Math.ceil((deadline - now) / 1000));
+          const orderId = btn.getAttribute("data-order-id");
+
+          if (remainingSec <= 0) {
+            btn.remove();
+          } else {
+            anyActive = true;
+            if (cancellingOrderId !== orderId) {
+              btn.textContent = `✕ Cancel Order (${formatCountdown(remainingSec)} left)`;
+            }
+          }
+        });
+
+        if (!anyActive) {
+          stopCancelCountdownTimer();
+        }
+      }, 1000);
+    }
+
+    function formatCountdown(totalSec) {
+      const mins = Math.floor(totalSec / 60);
+      const secs = totalSec % 60;
+      return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+    }
+
     function switchTab(tab) {
       currentScreen = tab;
       const shopBtn = document.getElementById("tabShopBtn");
@@ -365,6 +417,7 @@
         document.getElementById("ordersView").classList.remove("hidden");
         loadOrders();
       } else {
+        stopCancelCountdownTimer();
         shopBtn.className = "accent-btn py-1.5 rounded-lg text-xs font-bold shadow-sm transition";
         ordersBtn.className = "py-1.5 rounded-lg text-xs font-semibold hint-text transition";
         shopControls.classList.remove("hidden");
@@ -382,7 +435,6 @@
         if (!data.ok) throw new Error(data.error || "Failed to load catalog");
         catalog = data.items || [];
 
-        // Re-clamp any existing cart items if live stock changed
         for (const k in cart) {
           const entry = cart[k];
           const dbItem = catalog.find(i => i.id === entry.id);
@@ -411,6 +463,7 @@
     async function loadOrders() {
       const loadingEl = document.getElementById("ordersLoadingState");
       const listEl = document.getElementById("ordersList");
+      stopCancelCountdownTimer();
       loadingEl.classList.remove("hidden");
       listEl.innerHTML = "";
 
@@ -422,7 +475,15 @@
         const data = await res.json();
         if (!data.ok) throw new Error(data.error || "Failed to load orders");
 
-        recentOrders = data.orders || [];
+        const fetchedAt = Date.now();
+        recentOrders = (data.orders || []).map(ord => {
+          // Anchor deadline relative to client clock using server's remaining seconds
+          const clientDeadline = ord.canCancel && ord.secondsLeft > 0
+            ? (fetchedAt + ord.secondsLeft * 1000)
+            : 0;
+          return { ...ord, clientDeadlineMs: clientDeadline };
+        });
+
         loadingEl.classList.add("hidden");
         renderOrders(recentOrders);
       } catch (err) {
@@ -460,8 +521,17 @@
         return;
       }
 
+      const now = Date.now();
+      let hasCancellable = false;
+
       listEl.innerHTML = orders.map(ord => {
         const safeOrderId = escapeHtml(ord.orderId).replace(/'/g, "\\'");
+        const remainingSec = ord.canCancel && ord.clientDeadlineMs > now
+          ? Math.ceil((ord.clientDeadlineMs - now) / 1000)
+          : 0;
+        const showCancelBtn = ord.status === "Pending" && remainingSec > 0;
+        if (showCancelBtn) hasCancellable = true;
+
         const itemsHtml = ord.summary
           .split(";")
           .map(s => s.trim())
@@ -488,15 +558,68 @@
               <span class="font-bold text-sm">${fmt(ord.total)} ETB</span>
             </div>
 
-            <div class="pt-1">
+            <div class="pt-1 flex flex-col gap-1.5">
               <button onclick="reorderPastOrder('${safeOrderId}')"
                 class="w-full py-2 rounded-xl text-xs font-bold bg-blue-500/10 text-blue-600 hover:bg-blue-500/15 active:scale-95 transition flex items-center justify-center gap-1.5">
                 ↻ Reorder These Items
               </button>
+              ${showCancelBtn ? `
+                <button
+                  data-order-id="${escapeHtml(ord.orderId)}"
+                  data-cancel-deadline="${ord.clientDeadlineMs}"
+                  onclick="cancelRecentOrder('${safeOrderId}')"
+                  class="w-full py-2 rounded-xl text-xs font-bold bg-red-500/10 text-red-600 hover:bg-red-500/15 active:scale-95 transition">
+                  ✕ Cancel Order (${formatCountdown(remainingSec)} left)
+                </button>
+              ` : ""}
             </div>
           </div>
         `;
       }).join("");
+
+      if (hasCancellable) {
+        startCancelCountdownTimer();
+      }
+    }
+
+    async function cancelRecentOrder(orderId) {
+      if (cancellingOrderId) return;
+
+      const confirmed = await confirmAction(`Cancel order ${orderId}? Reserved stock will be released immediately.`);
+      if (!confirmed) return;
+
+      cancellingOrderId = orderId;
+      const btn = document.querySelector(`[data-order-id="${CSS.escape(orderId)}"]`);
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "Cancelling Order...";
+      }
+
+      try {
+        const res = await fetch(API_URL, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          body: JSON.stringify({
+            action: "cancel_order",
+            orderId: orderId,
+            user: tgUser,
+            localOrderIds: getLocalOrderIds()
+          })
+        });
+
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || "Could not cancel order.");
+
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+        showToast(`Order ${orderId} has been cancelled.`);
+        await Promise.all([loadOrders(), loadCatalog()]);
+      } catch (err) {
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
+        showToast(err.message);
+        await loadOrders();
+      } finally {
+        cancellingOrderId = null;
+      }
     }
 
     async function reorderPastOrder(orderId) {
@@ -660,7 +783,6 @@
         modalDraft[label] = existing && existing.qty > 0 ? existing.qty : 0;
       });
 
-      // Ensure initial draft respects live stock ceilings
       clampAllModalDraft();
 
       document.getElementById("modalCategory").textContent = item.category || "General";
