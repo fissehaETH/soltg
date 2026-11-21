@@ -74,7 +74,7 @@
         <input
           id="searchInput"
           type="text"
-          placeholder="Search cement, rebar, sand, blocks..."
+          placeholder="Search cement, rebar, sand, paint, size..."
           oninput="renderCatalog()"
           class="w-full rounded-xl px-3.5 py-2 text-sm bg-black/5 focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
@@ -90,6 +90,53 @@
     </div>
     <div id="catalogList" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3"></div>
   </main>
+
+  <!-- Variant / Size / Color / Type Bottom-Sheet Modal -->
+  <div id="variantModal" class="hidden fixed inset-0 z-40 bg-black/50 backdrop-blur-[1px] flex items-end sm:items-center justify-center">
+    <div class="card-surface w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-5 shadow-2xl space-y-4 max-h-[88vh] overflow-y-auto">
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <div id="modalCategory" class="text-[10px] uppercase tracking-wider font-semibold hint-text"></div>
+          <h3 id="modalItemName" class="text-base font-bold leading-snug"></h3>
+          <div id="modalItemPrice" class="text-sm font-bold text-blue-600 mt-0.5"></div>
+        </div>
+        <button onclick="closeVariantModal()" class="w-8 h-8 rounded-full bg-black/10 font-bold text-sm flex items-center justify-center shrink-0">
+          ✕
+        </button>
+      </div>
+
+      <!-- Option Chips -->
+      <div>
+        <label class="block text-xs font-semibold hint-text mb-2">Select Size / Color / Type *</label>
+        <div id="modalOptionsList" class="flex flex-wrap gap-2"></div>
+      </div>
+
+      <!-- Quantity Control for Selected Variant -->
+      <div class="pt-2 border-t border-black/10 flex items-center justify-between gap-3">
+        <div>
+          <div class="text-xs font-semibold">Quantity</div>
+          <div id="modalStockHint" class="text-[11px] hint-text"></div>
+        </div>
+
+        <div class="flex items-center gap-1.5 bg-black/5 rounded-xl p-1">
+          <button onclick="stepModalQty(-1)" class="w-8 h-8 rounded-lg bg-white/80 dark:bg-black/20 font-bold text-base flex items-center justify-center shadow-sm">
+            −
+          </button>
+          <input id="modalQtyInput" type="number" step="any" min="0" value="1"
+            oninput="syncModalQtyInput()"
+            class="w-16 text-center font-bold text-sm bg-transparent focus:outline-none" />
+          <button onclick="stepModalQty(1)" class="w-8 h-8 rounded-lg accent-btn font-bold text-base flex items-center justify-center shadow-sm">
+            +
+          </button>
+        </div>
+      </div>
+
+      <button id="modalApplyBtn" onclick="applyModalSelection()"
+        class="w-full accent-btn py-3 rounded-2xl font-bold text-sm shadow-md active:scale-95 transition">
+        Update Cart
+      </button>
+    </div>
+  </div>
 
   <!-- My Orders View -->
   <section id="ordersView" class="hidden p-4 space-y-3">
@@ -185,14 +232,64 @@
     }
 
     let catalog = [];
-    let cart = {}; // { itemId: qty }
+    let recentOrders = [];
+    // cart keyed by "itemId::variant" -> { id, variant, qty }
+    let cart = {};
     let selectedCategory = "All";
     let currentScreen = "catalog"; // "catalog" | "orders" | "checkout" | "success"
     let isSubmitting = false;
 
+    // Modal state
+    let modalItem = null;
+    let modalSelectedVariant = "";
+    let modalQty = 1;
+
     const tgUser = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) ? tg.initDataUnsafe.user : {};
     if (tgUser.first_name) {
       document.getElementById("inputName").value = [tgUser.first_name, tgUser.last_name].filter(Boolean).join(" ");
+    }
+
+    function cartKey(id, variant) {
+      return `${id}::${variant || ""}`;
+    }
+
+    function showToast(msg) {
+      if (tg && tg.showAlert) tg.showAlert(msg);
+      else alert(msg);
+    }
+
+    function getUnitPrice(item, variantLabel) {
+      if (!item) return 0;
+      if (variantLabel && Array.isArray(item.options)) {
+        const optObj = item.options.find(o => (typeof o === "object" ? o.label : o) === variantLabel);
+        if (optObj && typeof optObj === "object" && Number.isFinite(Number(optObj.price))) {
+          return Number(optObj.price);
+        }
+      }
+      return Number(item.price) || 0;
+    }
+
+    function getDisplayPriceSummary(item) {
+      if (!Array.isArray(item.options) || !item.options.length) {
+        return `${fmt(item.price)} <span class="text-[11px] font-normal hint-text">ETB / ${escapeHtml(item.unit)}</span>`;
+      }
+      const prices = item.options.map(o => (typeof o === "object" ? Number(o.price) : Number(item.price)));
+      const minP = Math.min(...prices);
+      const maxP = Math.max(...prices);
+      if (minP !== maxP) {
+        return `<span class="text-[11px] font-normal hint-text">From</span> ${fmt(minP)} <span class="text-[11px] font-normal hint-text">ETB / ${escapeHtml(item.unit)}</span>`;
+      }
+      return `${fmt(minP)} <span class="text-[11px] font-normal hint-text">ETB / ${escapeHtml(item.unit)}</span>`;
+    }
+
+    function getTotalReservedForItem(itemId, excludeVariant = null) {
+      let sum = 0;
+      for (const k in cart) {
+        if (cart[k].id === itemId && cart[k].variant !== excludeVariant) {
+          sum = roundQty(sum + cart[k].qty);
+        }
+      }
+      return sum;
     }
 
     function getLocalOrderIds() {
@@ -272,8 +369,9 @@
         const data = await res.json();
         if (!data.ok) throw new Error(data.error || "Failed to load orders");
 
+        recentOrders = data.orders || [];
         loadingEl.classList.add("hidden");
-        renderOrders(data.orders || []);
+        renderOrders(recentOrders);
       } catch (err) {
         loadingEl.classList.add("hidden");
         listEl.innerHTML = `<div class="text-center py-8 text-red-500 text-sm">${escapeHtml(err.message)}</div>`;
@@ -310,6 +408,7 @@
       }
 
       listEl.innerHTML = orders.map(ord => {
+        const safeOrderId = escapeHtml(ord.orderId).replace(/'/g, "\\'");
         const itemsHtml = ord.summary
           .split(";")
           .map(s => s.trim())
@@ -331,13 +430,119 @@
               ${itemsHtml}
             </ul>
 
-            <div class="pt-2 border-t border-black/5 flex items-center justify-between text-xs">
-              <span class="hint-text truncate max-w-[60%]">📍 ${escapeHtml(ord.contact)}</span>
+            <div class="pt-2 border-t border-black/5 flex items-center justify-between gap-2 text-xs">
+              <span class="hint-text truncate max-w-[55%]">📍 ${escapeHtml(ord.contact)}</span>
               <span class="font-bold text-sm">${fmt(ord.total)} ETB</span>
+            </div>
+
+            <div class="pt-1">
+              <button onclick="reorderPastOrder('${safeOrderId}')"
+                class="w-full py-2 rounded-xl text-xs font-bold bg-blue-500/10 text-blue-600 hover:bg-blue-500/15 active:scale-95 transition flex items-center justify-center gap-1.5">
+                ↻ Reorder These Items
+              </button>
             </div>
           </div>
         `;
       }).join("");
+    }
+
+    /**
+     * Parses past order summary strings like:
+     * "Deformed Rebar (12m) [12mm] × 10 bar (11,000 ETB); River Sand (16m³) × 1 truck (18,500 ETB)"
+     * and loads available items back into the cart in one tap.
+     */
+    async function reorderPastOrder(orderId) {
+      const ord = recentOrders.find(o => o.orderId === orderId);
+      if (!ord || !ord.summary) return;
+
+      // Ensure catalog is loaded so we can verify live stock and variant options
+      if (!catalog.length) {
+        await loadCatalog();
+      }
+
+      const rawLines = ord.summary.split(";").map(s => s.trim()).filter(Boolean);
+      const nextCart = {};
+      const notices = [];
+      let loadedCount = 0;
+
+      for (const line of rawLines) {
+        // Match: "<Item Name> [Optional Variant] × <qty> <unit> (<total> ETB)"
+        const match = line.match(/^(.+?)(?:\s*\[([^\]]+)\])?\s*×\s*(\d+(?:\.\d+)?)\s+/);
+        if (!match) continue;
+
+        const parsedName = match[1].trim();
+        const parsedVariant = (match[2] || "").trim();
+        const requestedQty = roundQty(parseFloat(match[3]));
+
+        const dbItem = catalog.find(it => it.name.toLowerCase() === parsedName.toLowerCase());
+        if (!dbItem || dbItem.stock <= 0) {
+          notices.push(`• ${parsedName}${parsedVariant ? ` [${parsedVariant}]` : ""}: currently out of stock`);
+          continue;
+        }
+
+        let validVariant = "";
+        if (Array.isArray(dbItem.options) && dbItem.options.length > 0) {
+          const optLabels = dbItem.options.map(o => (typeof o === "object" ? o.label : o));
+          const matchedLabel = optLabels.find(lbl => lbl.toLowerCase() === parsedVariant.toLowerCase());
+          if (!matchedLabel) {
+            notices.push(`• ${dbItem.name} [${parsedVariant}]: option no longer available`);
+            continue;
+          }
+          validVariant = matchedLabel;
+        }
+
+        // Respect total available stock across multiple variants of the same base item
+        let alreadyReserved = 0;
+        for (const k in nextCart) {
+          if (nextCart[k].id === dbItem.id) {
+            alreadyReserved = roundQty(alreadyReserved + nextCart[k].qty);
+          }
+        }
+        const remainingStock = roundQty(Math.max(0, dbItem.stock - alreadyReserved));
+        if (remainingStock <= 0) {
+          notices.push(`• ${dbItem.name}${validVariant ? ` [${validVariant}]` : ""}: stock limit reached`);
+          continue;
+        }
+
+        const finalQty = Math.min(remainingStock, requestedQty);
+        if (finalQty < requestedQty) {
+          notices.push(`• ${dbItem.name}${validVariant ? ` [${validVariant}]` : ""}: adjusted from ${fmt(requestedQty)} to ${fmt(finalQty)} ${dbItem.unit} (max in stock)`);
+        }
+
+        const key = cartKey(dbItem.id, validVariant);
+        nextCart[key] = {
+          id: dbItem.id,
+          variant: validVariant,
+          qty: finalQty
+        };
+        loadedCount += 1;
+      }
+
+      if (!loadedCount) {
+        if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
+        showToast("None of the items from this past order are currently in stock.");
+        return;
+      }
+
+      // Pre-fill phone & delivery address from the past order if inputs are currently empty
+      if (ord.contact) {
+        const parts = ord.contact.split("|").map(s => s.trim());
+        if (parts[0] && !document.getElementById("inputPhone").value.trim()) {
+          document.getElementById("inputPhone").value = parts[0];
+        }
+        if (parts[1] && !document.getElementById("inputLocation").value.trim()) {
+          document.getElementById("inputLocation").value = parts[1].replace(/\s*\([^)]*\)\s*$/, "").trim();
+        }
+      }
+
+      cart = nextCart;
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+      renderCatalog();
+      openCheckout();
+
+      if (notices.length) {
+        showToast("Cart updated with current stock:\n\n" + notices.join("\n"));
+      }
     }
 
     function escapeHtml(str) {
@@ -400,48 +605,195 @@
       }).join("");
     }
 
-    function updateQty(id, delta) {
+    /* ---------------------------------------------------------------
+       VARIANT BOTTOM-SHEET MODAL
+    ---------------------------------------------------------------- */
+
+    function openVariantModal(itemId) {
+      const item = catalog.find(i => i.id === itemId);
+      if (!item || !item.options || !item.options.length) return;
+
+      modalItem = item;
+      const firstLabel = typeof item.options[0] === "object" ? item.options[0].label : item.options[0];
+      const existingEntry = Object.values(cart).find(e => e.id === item.id && e.qty > 0);
+      modalSelectedVariant = existingEntry ? existingEntry.variant : firstLabel;
+      syncModalFromCart();
+
+      document.getElementById("modalCategory").textContent = item.category || "General";
+      document.getElementById("modalItemName").textContent = item.name;
+      document.getElementById("variantModal").classList.remove("hidden");
+
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("light");
+    }
+
+    function closeVariantModal() {
+      document.getElementById("variantModal").classList.add("hidden");
+      modalItem = null;
+    }
+
+    function selectModalVariant(optLabel) {
+      modalSelectedVariant = optLabel;
+      syncModalFromCart();
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+    }
+
+    function syncModalFromCart() {
+      if (!modalItem) return;
+      const key = cartKey(modalItem.id, modalSelectedVariant);
+      const existing = cart[key];
+      const otherReserved = getTotalReservedForItem(modalItem.id, modalSelectedVariant);
+      const maxForThisVariant = roundQty(Math.max(0, modalItem.stock - otherReserved));
+      const activeUnitPrice = getUnitPrice(modalItem, modalSelectedVariant);
+
+      document.getElementById("modalItemPrice").textContent = `${fmt(activeUnitPrice)} ETB / ${modalItem.unit}`;
+
+      modalQty = existing ? existing.qty : (maxForThisVariant > 0 ? 1 : 0);
+      document.getElementById("modalQtyInput").value = modalQty;
+      document.getElementById("modalStockHint").textContent =
+        `${fmt(maxForThisVariant)} ${modalItem.unit} available${otherReserved > 0 ? ` (${fmt(otherReserved)} in other options)` : ""}`;
+
+      document.getElementById("modalOptionsList").innerHTML = modalItem.options.map(opt => {
+        const label = typeof opt === "object" ? opt.label : opt;
+        const optPrice = typeof opt === "object" ? Number(opt.price) : Number(modalItem.price);
+        const isSelected = label === modalSelectedVariant;
+        const optEntry = cart[cartKey(modalItem.id, label)];
+        const inCartBadge = optEntry && optEntry.qty > 0 ? ` ✓${fmt(optEntry.qty)}` : "";
+        const safeLabel = escapeHtml(label).replace(/'/g, "\\'");
+
+        return `
+          <button onclick="selectModalVariant('${safeLabel}')"
+            class="px-3.5 py-2 rounded-xl text-xs font-semibold transition border ${
+              isSelected
+                ? "accent-btn border-transparent shadow-sm"
+                : "bg-black/5 border-black/10 hover:bg-black/10"
+            }">
+            ${escapeHtml(label)} <span class="opacity-80">• ${fmt(optPrice)} ETB</span>${inCartBadge}
+          </button>
+        `;
+      }).join("");
+
+      syncModalButtonLabel();
+    }
+
+    function stepModalQty(delta) {
+      if (!modalItem) return;
+      const otherReserved = getTotalReservedForItem(modalItem.id, modalSelectedVariant);
+      const maxAllowed = roundQty(Math.max(0, modalItem.stock - otherReserved));
+      modalQty = roundQty(Math.max(0, Math.min(maxAllowed, modalQty + delta)));
+      document.getElementById("modalQtyInput").value = modalQty;
+      syncModalButtonLabel();
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+    }
+
+    function syncModalQtyInput() {
+      if (!modalItem) return;
+      const otherReserved = getTotalReservedForItem(modalItem.id, modalSelectedVariant);
+      const maxAllowed = roundQty(Math.max(0, modalItem.stock - otherReserved));
+      const parsed = roundQty(parseFloat(document.getElementById("modalQtyInput").value));
+      modalQty = Number.isFinite(parsed) && parsed > 0 ? Math.min(maxAllowed, parsed) : 0;
+      syncModalButtonLabel();
+    }
+
+    function syncModalButtonLabel() {
+      if (!modalItem) return;
+      const key = cartKey(modalItem.id, modalSelectedVariant);
+      const existing = cart[key];
+      const activeUnitPrice = getUnitPrice(modalItem, modalSelectedVariant);
+      const btn = document.getElementById("modalApplyBtn");
+      if (modalQty <= 0) {
+        btn.textContent = existing ? `Remove ${modalSelectedVariant}` : "Close";
+      } else {
+        const lineTotal = roundQty(activeUnitPrice * modalQty);
+        btn.textContent = `Save • ${fmt(modalQty)} ${modalItem.unit} (${fmt(lineTotal)} ETB)`;
+      }
+    }
+
+    function applyModalSelection() {
+      if (!modalItem) return;
+      const key = cartKey(modalItem.id, modalSelectedVariant);
+      if (modalQty <= 0) {
+        delete cart[key];
+      } else {
+        cart[key] = {
+          id: modalItem.id,
+          variant: modalSelectedVariant,
+          qty: modalQty
+        };
+      }
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+      closeVariantModal();
+      renderCatalog();
+      updateMainButton();
+    }
+
+    /* ---------------------------------------------------------------
+       DIRECT CART CONTROLS (FOR ITEMS WITHOUT VARIANTS)
+    ---------------------------------------------------------------- */
+
+    function updateSimpleQty(id, delta) {
       const item = catalog.find(i => i.id === id);
       if (!item) return;
-      const current = cart[id] || 0;
+      const key = cartKey(id, "");
+      const current = cart[key] ? cart[key].qty : 0;
       const next = roundQty(Math.max(0, Math.min(item.stock, current + delta)));
       if (next <= 0) {
-        delete cart[id];
+        delete cart[key];
       } else {
-        cart[id] = next;
+        cart[key] = { id, variant: "", qty: next };
       }
       if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
       renderCatalog();
       updateMainButton();
     }
 
-    function setExactQty(id, rawVal) {
+    function setSimpleExactQty(id, rawVal) {
       const item = catalog.find(i => i.id === id);
       if (!item) return;
+      const key = cartKey(id, "");
       const val = roundQty(parseFloat(rawVal));
       if (!Number.isFinite(val) || val <= 0) {
-        delete cart[id];
+        delete cart[key];
       } else {
-        cart[id] = Math.min(item.stock, val);
+        cart[key] = { id, variant: "", qty: Math.min(item.stock, val) };
       }
       renderCatalog();
       updateMainButton();
     }
 
+    function removeCartLine(key) {
+      delete cart[key];
+      const { entries } = getCartTotals();
+      if (!entries.length) {
+        closeCheckout();
+      } else {
+        openCheckout();
+      }
+      renderCatalog();
+    }
+
     function getCartTotals() {
       let totalETB = 0;
-      let itemCount = 0;
+      let lineCount = 0;
       const entries = [];
-      for (const id in cart) {
-        const item = catalog.find(i => i.id === id);
-        if (item && cart[id] > 0) {
-          const lineTotal = roundQty(item.price * cart[id]);
+      for (const k in cart) {
+        const entry = cart[k];
+        const item = catalog.find(i => i.id === entry.id);
+        if (item && entry.qty > 0) {
+          const unitPrice = getUnitPrice(item, entry.variant);
+          const lineTotal = roundQty(unitPrice * entry.qty);
           totalETB = roundQty(totalETB + lineTotal);
-          itemCount += 1;
-          entries.push({ ...item, qty: cart[id], lineTotal });
+          lineCount += 1;
+          entries.push({
+            key: k,
+            ...item,
+            price: unitPrice,
+            variant: entry.variant || "",
+            qty: entry.qty,
+            lineTotal
+          });
         }
       }
-      return { totalETB, itemCount, entries };
+      return { totalETB, itemCount: lineCount, entries };
     }
 
     function renderCatalog() {
@@ -449,8 +801,11 @@
       const container = document.getElementById("catalogList");
 
       const filtered = catalog.filter(it => {
+        const optionLabels = (it.options || []).map(o => (typeof o === "object" ? o.label : o));
+        const optionsText = optionLabels.join(" ").toLowerCase();
         const matchesSearch = it.name.toLowerCase().includes(query) ||
-                              (it.category || "").toLowerCase().includes(query);
+                              (it.category || "").toLowerCase().includes(query) ||
+                              optionsText.includes(query);
         const matchesCat = selectedCategory === "All" || (it.category || "General") === selectedCategory;
         return matchesSearch && matchesCat;
       });
@@ -461,13 +816,21 @@
       }
 
       container.innerHTML = filtered.map(item => {
-        const qty = cart[item.id] || 0;
+        const hasVariants = Array.isArray(item.options) && item.options.length > 0;
+        const optionLabels = hasVariants
+          ? item.options.map(o => (typeof o === "object" ? o.label : o))
+          : [];
+        const totalInCart = getTotalReservedForItem(item.id);
         const lowStock = item.stock <= 10;
         const fallbackIcon = getCategoryFallbackIcon(item.category);
         const safeId = escapeHtml(item.id).replace(/'/g, "\\'");
 
+        const variantPillHtml = hasVariants
+          ? `<span class="absolute top-1.5 left-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-600/90 text-white shadow-sm">${item.options.length} options</span>`
+          : "";
+
         const mediaHtml = item.imageUrl ? `
-          <div class="relative w-full aspect-[4/3] bg-black/5 overflow-hidden flex items-center justify-center">
+          <div onclick="${hasVariants ? `openVariantModal('${safeId}')` : ""}" class="relative w-full aspect-[4/3] bg-black/5 overflow-hidden flex items-center justify-center ${hasVariants ? "cursor-pointer" : ""}">
             <img
               src="${escapeHtml(item.imageUrl)}"
               alt="${escapeHtml(item.name)}"
@@ -478,21 +841,56 @@
             <div style="display:none" class="w-full h-full items-center justify-center text-3xl">
               ${fallbackIcon}
             </div>
+            ${variantPillHtml}
             <span class="absolute bottom-1.5 right-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold backdrop-blur-md ${lowStock ? "bg-amber-500/90 text-white" : "bg-black/60 text-white"}">
               ${fmt(item.stock)} ${escapeHtml(item.unit)}
             </span>
           </div>
         ` : `
-          <div class="relative w-full aspect-[4/3] bg-black/5 flex items-center justify-center text-4xl">
+          <div onclick="${hasVariants ? `openVariantModal('${safeId}')` : ""}" class="relative w-full aspect-[4/3] bg-black/5 flex items-center justify-center text-4xl ${hasVariants ? "cursor-pointer" : ""}">
             ${fallbackIcon}
+            ${variantPillHtml}
             <span class="absolute bottom-1.5 right-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold ${lowStock ? "bg-amber-500 text-white" : "bg-black/60 text-white"}">
               ${fmt(item.stock)} ${escapeHtml(item.unit)}
             </span>
           </div>
         `;
 
+        let actionControlsHtml = "";
+        if (hasVariants) {
+          actionControlsHtml = `
+            <button onclick="openVariantModal('${safeId}')"
+              class="w-full accent-btn py-2 rounded-xl text-xs font-semibold shadow-sm active:scale-95 transition">
+              ${totalInCart > 0 ? `✓ ${fmt(totalInCart)} ${escapeHtml(item.unit)} • Edit` : "Select Option"}
+            </button>
+          `;
+        } else if (totalInCart === 0) {
+          actionControlsHtml = `
+            <button onclick="updateSimpleQty('${safeId}', 1)"
+              class="w-full accent-btn py-2 rounded-xl text-xs font-semibold shadow-sm active:scale-95 transition">
+              + Add
+            </button>
+          `;
+        } else {
+          actionControlsHtml = `
+            <div class="flex items-center justify-between gap-1 bg-black/5 rounded-xl p-1">
+              <button onclick="updateSimpleQty('${safeId}', -1)"
+                class="w-7 h-7 rounded-lg bg-white/80 dark:bg-black/20 font-bold text-sm flex items-center justify-center active:scale-95 shadow-sm">
+                −
+              </button>
+              <input type="number" step="any" min="0" max="${item.stock}" value="${totalInCart}"
+                onchange="setSimpleExactQty('${safeId}', this.value)"
+                class="w-full min-w-0 text-center font-bold text-xs bg-transparent focus:outline-none" />
+              <button onclick="updateSimpleQty('${safeId}', 1)"
+                class="w-7 h-7 rounded-lg accent-btn font-bold text-sm flex items-center justify-center active:scale-95 shadow-sm">
+                +
+              </button>
+            </div>
+          `;
+        }
+
         return `
-          <div class="card-surface rounded-2xl overflow-hidden shadow-sm flex flex-col justify-between border border-black/5 ${qty > 0 ? "ring-2 ring-blue-500" : ""}">
+          <div class="card-surface rounded-2xl overflow-hidden shadow-sm flex flex-col justify-between border border-black/5 ${totalInCart > 0 ? "ring-2 ring-blue-500" : ""}">
             <div>
               ${mediaHtml}
 
@@ -503,33 +901,19 @@
                 <h3 class="font-semibold text-xs leading-snug line-clamp-2 min-h-[2.1rem] mt-0.5">
                   ${escapeHtml(item.name)}
                 </h3>
+                ${hasVariants ? `
+                  <div class="text-[11px] hint-text truncate mt-0.5">
+                    ${escapeHtml(optionLabels.join(", "))}
+                  </div>
+                ` : ""}
                 <div class="text-sm font-bold text-blue-600 mt-1">
-                  ${fmt(item.price)} <span class="text-[11px] font-normal hint-text">ETB / ${escapeHtml(item.unit)}</span>
+                  ${getDisplayPriceSummary(item)}
                 </div>
               </div>
             </div>
 
             <div class="p-2.5 pt-1.5">
-              ${qty === 0 ? `
-                <button onclick="updateQty('${safeId}', 1)"
-                  class="w-full accent-btn py-2 rounded-xl text-xs font-semibold shadow-sm active:scale-95 transition">
-                  + Add
-                </button>
-              ` : `
-                <div class="flex items-center justify-between gap-1 bg-black/5 rounded-xl p-1">
-                  <button onclick="updateQty('${safeId}', -1)"
-                    class="w-7 h-7 rounded-lg bg-white/80 dark:bg-black/20 font-bold text-sm flex items-center justify-center active:scale-95 shadow-sm">
-                    −
-                  </button>
-                  <input type="number" step="any" min="0" max="${item.stock}" value="${qty}"
-                    onchange="setExactQty('${safeId}', this.value)"
-                    class="w-full min-w-0 text-center font-bold text-xs bg-transparent focus:outline-none" />
-                  <button onclick="updateQty('${safeId}', 1)"
-                    class="w-7 h-7 rounded-lg accent-btn font-bold text-sm flex items-center justify-center active:scale-95 shadow-sm">
-                    +
-                  </button>
-                </div>
-              `}
+              ${actionControlsHtml}
             </div>
           </div>
         `;
@@ -574,15 +958,25 @@
       document.getElementById("checkoutView").classList.remove("hidden");
       document.getElementById("checkoutTotal").textContent = `${fmt(totalETB)} ETB`;
 
-      document.getElementById("checkoutItems").innerHTML = entries.map(e => `
-        <div class="py-2.5 flex justify-between items-center gap-2">
-          <div>
-            <div class="font-medium">${escapeHtml(e.name)}</div>
-            <div class="text-xs hint-text">${fmt(e.qty)} ${escapeHtml(e.unit)} × ${fmt(e.price)} ETB</div>
+      document.getElementById("checkoutItems").innerHTML = entries.map(e => {
+        const safeKey = escapeHtml(e.key).replace(/'/g, "\\'");
+        const variantBadge = e.variant
+          ? `<span class="inline-block ml-1.5 px-2 py-0.5 rounded-md text-[10px] font-bold bg-blue-500/15 text-blue-600">${escapeHtml(e.variant)}</span>`
+          : "";
+
+        return `
+          <div class="py-2.5 flex justify-between items-center gap-2">
+            <div class="min-w-0 flex-1">
+              <div class="font-medium">${escapeHtml(e.name)}${variantBadge}</div>
+              <div class="text-xs hint-text">${fmt(e.qty)} ${escapeHtml(e.unit)} × ${fmt(e.price)} ETB</div>
+            </div>
+            <div class="flex items-center gap-2 shrink-0">
+              <span class="font-semibold">${fmt(e.lineTotal)} ETB</span>
+              <button onclick="removeCartLine('${safeKey}')" class="text-xs text-red-500 px-1.5 py-0.5 rounded bg-red-500/10">✕</button>
+            </div>
           </div>
-          <div class="font-semibold">${fmt(e.lineTotal)} ETB</div>
-        </div>
-      `).join("");
+        `;
+      }).join("");
 
       if (tg && tg.BackButton) {
         tg.BackButton.show();
@@ -605,9 +999,7 @@
       const notes = document.getElementById("inputNotes").value.trim();
 
       if (phone.length < 7 || location.length < 3) {
-        const msg = "Please enter a valid phone number and delivery location.";
-        if (tg && tg.showAlert) tg.showAlert(msg);
-        else alert(msg);
+        showToast("Please enter a valid phone number and delivery location.");
         return;
       }
 
@@ -622,7 +1014,7 @@
           headers: { "Content-Type": "text/plain;charset=utf-8" },
           body: JSON.stringify({
             action: "checkout",
-            cart: entries.map(e => ({ id: e.id, qty: e.qty })),
+            cart: entries.map(e => ({ id: e.id, variant: e.variant, qty: e.qty })),
             customerName,
             phone,
             location,
@@ -645,8 +1037,7 @@
         updateMainButton();
       } catch (err) {
         if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
-        if (tg && tg.showAlert) tg.showAlert(err.message);
-        else alert(err.message);
+        showToast(err.message);
       } finally {
         isSubmitting = false;
         if (tg && tg.MainButton) tg.MainButton.hideProgress();
