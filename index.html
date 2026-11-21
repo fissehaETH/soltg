@@ -44,6 +44,10 @@
     const API_URL = "https://script.google.com/macros/s/AKfycbzbCBWPh82bDXjQ5GT0esMETuwz295OTAvDeE0eZ8gMfpbG2WAV--uCrNOKaAAsWsPV/exec";
   </script>
 
+  <!-- Floating Stock Warning Banner -->
+  <div id="stockBanner" class="hidden fixed top-3 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full bg-amber-600 text-white text-xs font-bold shadow-lg pointer-events-none transition-opacity">
+  </div>
+
   <!-- Header -->
   <header class="sticky top-0 z-20 card-surface border-b border-black/10 px-4 pt-3 pb-2.5 shadow-sm">
     <div class="flex items-center justify-between">
@@ -233,6 +237,7 @@
     // Multi-variant modal state: { [variantLabel]: qty }
     let modalItem = null;
     let modalDraft = {};
+    let bannerTimer = null;
 
     const tgUser = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) ? tg.initDataUnsafe.user : {};
     if (tgUser.first_name) {
@@ -246,6 +251,17 @@
     function showToast(msg) {
       if (tg && tg.showAlert) tg.showAlert(msg);
       else alert(msg);
+    }
+
+    function flashStockWarning(msg) {
+      const el = document.getElementById("stockBanner");
+      el.textContent = msg;
+      el.classList.remove("hidden");
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("warning");
+      clearTimeout(bannerTimer);
+      bannerTimer = setTimeout(() => {
+        el.classList.add("hidden");
+      }, 2200);
     }
 
     function getOptionObj(item, variantLabel) {
@@ -263,26 +279,29 @@
     }
 
     /**
-     * Returns max orderable quantity for a specific (item, variantLabel) given other quantities already in `sourceMap`.
+     * Strictly computes the maximum allowed quantity for (item, variantLabel),
+     * accounting for both per-option stock and shared item stock across other lines in `sourceMap`.
      */
     function getMaxStockForVariant(item, variantLabel, sourceMap = cart) {
       if (!item) return 0;
-      const optObj = getOptionObj(item, variantLabel);
+      const itemTotalStock = Math.max(0, roundQty(Number(item.stock) || 0));
 
-      // Case 1: Option defines its own individual stock count
-      if (optObj && typeof optObj === "object" && optObj.hasOwnStock) {
-        return roundQty(Math.max(0, Number(optObj.stock) || 0));
-      }
-
-      // Case 2: Option shares the row's total stock pool with other options
-      let otherReserved = 0;
+      let otherReservedTotal = 0;
       for (const k in sourceMap) {
         const entry = sourceMap[k];
         if (entry && entry.id === item.id && entry.variant !== variantLabel) {
-          otherReserved = roundQty(otherReserved + (Number(entry.qty) || 0));
+          otherReservedTotal = roundQty(otherReservedTotal + Math.max(0, roundQty(Number(entry.qty) || 0)));
         }
       }
-      return roundQty(Math.max(0, (Number(item.stock) || 0) - otherReserved));
+      const remainingItemCeiling = roundQty(Math.max(0, itemTotalStock - otherReservedTotal));
+
+      const optObj = getOptionObj(item, variantLabel);
+      if (optObj && typeof optObj === "object" && optObj.hasOwnStock) {
+        const optStock = Math.max(0, roundQty(Number(optObj.stock) || 0));
+        return Math.min(optStock, remainingItemCeiling);
+      }
+
+      return remainingItemCeiling;
     }
 
     function getDisplayPriceSummary(item) {
@@ -362,9 +381,27 @@
         const data = await res.json();
         if (!data.ok) throw new Error(data.error || "Failed to load catalog");
         catalog = data.items || [];
+
+        // Re-clamp any existing cart items if live stock changed
+        for (const k in cart) {
+          const entry = cart[k];
+          const dbItem = catalog.find(i => i.id === entry.id);
+          if (!dbItem) {
+            delete cart[k];
+            continue;
+          }
+          const maxStock = getMaxStockForVariant(dbItem, entry.variant, cart);
+          if (maxStock <= 0) {
+            delete cart[k];
+          } else if (entry.qty > maxStock) {
+            cart[k].qty = maxStock;
+          }
+        }
+
         document.getElementById("loadingState").classList.add("hidden");
         renderCategories();
         renderCatalog();
+        updateMainButton();
       } catch (err) {
         document.getElementById("loadingState").innerHTML =
           `<div class="text-red-500 font-medium">Could not load catalog.<br><span class="text-xs">${escapeHtml(err.message)}</span></div>`;
@@ -607,7 +644,7 @@
     }
 
     /* ---------------------------------------------------------------
-       MULTI-VARIANT BOTTOM-SHEET MODAL (WITH PER-OPTION STOCK)
+       MULTI-VARIANT BOTTOM-SHEET MODAL (WITH STRICT STOCK CAPS)
     ---------------------------------------------------------------- */
 
     function openVariantModal(itemId) {
@@ -623,6 +660,9 @@
         modalDraft[label] = existing && existing.qty > 0 ? existing.qty : 0;
       });
 
+      // Ensure initial draft respects live stock ceilings
+      clampAllModalDraft();
+
       document.getElementById("modalCategory").textContent = item.category || "General";
       document.getElementById("modalItemName").textContent = item.name;
       renderModalOptions();
@@ -635,6 +675,15 @@
       document.getElementById("variantModal").classList.add("hidden");
       modalItem = null;
       modalDraft = {};
+    }
+
+    function clampAllModalDraft() {
+      if (!modalItem) return;
+      for (const label in modalDraft) {
+        const maxAllowed = getModalMaxForOption(label);
+        const current = roundQty(modalDraft[label] || 0);
+        modalDraft[label] = current > 0 ? Math.min(maxAllowed, current) : 0;
+      }
     }
 
     function getModalDraftTotals() {
@@ -662,33 +711,74 @@
 
     function getModalMaxForOption(optLabel) {
       if (!modalItem) return 0;
+      const itemTotalStock = Math.max(0, roundQty(Number(modalItem.stock) || 0));
+      const { totalQty } = getModalDraftTotals();
+      const current = roundQty(modalDraft[optLabel] || 0);
+      const otherAllOptionsQty = roundQty(totalQty - current);
+      const remainingItemCeiling = roundQty(Math.max(0, itemTotalStock - otherAllOptionsQty));
+
       const optObj = getOptionObj(modalItem, optLabel);
       if (optObj && typeof optObj === "object" && optObj.hasOwnStock) {
-        return roundQty(Math.max(0, Number(optObj.stock) || 0));
+        const optStock = Math.max(0, roundQty(Number(optObj.stock) || 0));
+        return Math.min(optStock, remainingItemCeiling);
       }
-      const { sharedPoolQty } = getModalDraftTotals();
-      const current = roundQty(modalDraft[optLabel] || 0);
-      const otherShared = roundQty(sharedPoolQty - current);
-      return roundQty(Math.max(0, (Number(modalItem.stock) || 0) - otherShared));
+
+      return remainingItemCeiling;
     }
 
     function stepDraftVariant(optLabel, delta) {
       if (!modalItem) return;
       const current = roundQty(modalDraft[optLabel] || 0);
       const maxForThis = getModalMaxForOption(optLabel);
-      const next = roundQty(Math.max(0, Math.min(maxForThis, current + delta)));
 
+      if (delta > 0 && current >= maxForThis) {
+        flashStockWarning(`Only ${fmt(maxForThis)} ${modalItem.unit} available`);
+        return;
+      }
+
+      const next = roundQty(Math.max(0, Math.min(maxForThis, current + delta)));
       modalDraft[optLabel] = next;
       if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
       renderModalOptions();
     }
 
-    function setDraftVariantExact(optLabel, rawVal) {
+    function handleDraftInputLive(optLabel, inputEl) {
+      if (!modalItem) return;
+      const maxForThis = getModalMaxForOption(optLabel);
+      const raw = inputEl.value;
+      if (raw === "") {
+        modalDraft[optLabel] = 0;
+        updateModalFooterOnly();
+        return;
+      }
+
+      let parsed = roundQty(parseFloat(raw));
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        parsed = 0;
+        inputEl.value = 0;
+      } else if (parsed > maxForThis) {
+        parsed = maxForThis;
+        inputEl.value = maxForThis;
+        flashStockWarning(`Max available: ${fmt(maxForThis)} ${modalItem.unit}`);
+      }
+
+      modalDraft[optLabel] = parsed;
+      updateModalFooterOnly();
+    }
+
+    function commitDraftInput(optLabel, rawVal) {
       if (!modalItem) return;
       const maxForThis = getModalMaxForOption(optLabel);
       const parsed = roundQty(parseFloat(rawVal));
 
-      modalDraft[optLabel] = Number.isFinite(parsed) && parsed > 0 ? Math.min(maxForThis, parsed) : 0;
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        modalDraft[optLabel] = 0;
+      } else if (parsed > maxForThis) {
+        modalDraft[optLabel] = maxForThis;
+        flashStockWarning(`Max available: ${fmt(maxForThis)} ${modalItem.unit}`);
+      } else {
+        modalDraft[optLabel] = parsed;
+      }
       renderModalOptions();
     }
 
@@ -701,7 +791,7 @@
       renderModalOptions();
     }
 
-    function renderModalOptions() {
+    function updateModalFooterOnly() {
       if (!modalItem) return;
       const { totalQty, sharedPoolQty, totalETB, selectedCount } = getModalDraftTotals();
 
@@ -718,6 +808,26 @@
       if (selectedCount > 0) clearBtn.classList.remove("hidden");
       else clearBtn.classList.add("hidden");
 
+      const summaryEl = document.getElementById("modalDraftSummary");
+      const applyBtn = document.getElementById("modalApplyBtn");
+
+      if (selectedCount === 0) {
+        summaryEl.innerHTML = `<span class="hint-text">No options selected</span><span class="font-bold">0 ETB</span>`;
+        applyBtn.textContent = "Save Selection";
+      } else {
+        const optWord = selectedCount === 1 ? "1 option" : `${selectedCount} options`;
+        summaryEl.innerHTML = `
+          <span class="font-semibold text-blue-600">${optWord} • ${fmt(totalQty)} ${escapeHtml(modalItem.unit)}</span>
+          <span class="font-bold text-sm">${fmt(totalETB)} ETB</span>
+        `;
+        applyBtn.textContent = `Save to Cart (${optWord}) • ${fmt(totalETB)} ETB`;
+      }
+    }
+
+    function renderModalOptions() {
+      if (!modalItem) return;
+      clampAllModalDraft();
+
       document.getElementById("modalOptionsList").innerHTML = modalItem.options.map(opt => {
         const label = typeof opt === "object" ? opt.label : opt;
         const optPrice = typeof opt === "object" ? Number(opt.price) : Number(modalItem.price);
@@ -725,7 +835,7 @@
         const qty = roundQty(modalDraft[label] || 0);
         const maxForThis = getModalMaxForOption(label);
         const remainingForThis = roundQty(Math.max(0, maxForThis - qty));
-        const isOutOfStock = maxForThis <= 0;
+        const isOutOfStock = maxForThis <= 0 && qty <= 0;
         const isLowStock = !isOutOfStock && maxForThis <= 10;
         const safeLabel = escapeHtml(label).replace(/'/g, "\\'");
         const lineSub = qty > 0 ? ` • ${fmt(roundQty(optPrice * qty))} ETB` : "";
@@ -768,7 +878,8 @@
                   −
                 </button>
                 <input type="number" step="any" min="0" max="${maxForThis}" value="${qty}"
-                  onchange="setDraftVariantExact('${safeLabel}', this.value)"
+                  oninput="handleDraftInputLive('${safeLabel}', this)"
+                  onchange="commitDraftInput('${safeLabel}', this.value)"
                   class="w-12 text-center font-bold text-xs bg-transparent focus:outline-none" />
                 <button onclick="stepDraftVariant('${safeLabel}', 1)"
                   ${remainingForThis <= 0 ? "disabled" : ""}
@@ -783,28 +894,17 @@
         `;
       }).join("");
 
-      const summaryEl = document.getElementById("modalDraftSummary");
-      const applyBtn = document.getElementById("modalApplyBtn");
-
-      if (selectedCount === 0) {
-        summaryEl.innerHTML = `<span class="hint-text">No options selected</span><span class="font-bold">0 ETB</span>`;
-        applyBtn.textContent = "Save Selection";
-      } else {
-        const optWord = selectedCount === 1 ? "1 option" : `${selectedCount} options`;
-        summaryEl.innerHTML = `
-          <span class="font-semibold text-blue-600">${optWord} • ${fmt(totalQty)} ${escapeHtml(modalItem.unit)}</span>
-          <span class="font-bold text-sm">${fmt(totalETB)} ETB</span>
-        `;
-        applyBtn.textContent = `Save to Cart (${optWord}) • ${fmt(totalETB)} ETB`;
-      }
+      updateModalFooterOnly();
     }
 
     function applyModalSelection() {
       if (!modalItem) return;
+      clampAllModalDraft();
 
       for (const label in modalDraft) {
         const key = cartKey(modalItem.id, label);
-        const q = roundQty(modalDraft[label]);
+        const maxAllowed = getModalMaxForOption(label);
+        const q = Math.min(maxAllowed, roundQty(modalDraft[label]));
         if (q <= 0) {
           delete cart[key];
         } else {
@@ -831,7 +931,14 @@
       if (!item) return;
       const key = cartKey(id, "");
       const current = cart[key] ? cart[key].qty : 0;
-      const next = roundQty(Math.max(0, Math.min(item.stock, current + delta)));
+      const maxStock = roundQty(Math.max(0, Number(item.stock) || 0));
+
+      if (delta > 0 && current >= maxStock) {
+        flashStockWarning(`Only ${fmt(maxStock)} ${item.unit} available`);
+        return;
+      }
+
+      const next = roundQty(Math.max(0, Math.min(maxStock, current + delta)));
       if (next <= 0) {
         delete cart[key];
       } else {
@@ -842,15 +949,34 @@
       updateMainButton();
     }
 
+    function handleSimpleInputLive(id, inputEl) {
+      const item = catalog.find(i => i.id === id);
+      if (!item) return;
+      const maxStock = roundQty(Math.max(0, Number(item.stock) || 0));
+      const raw = inputEl.value;
+      if (raw === "") return;
+
+      const parsed = roundQty(parseFloat(raw));
+      if (Number.isFinite(parsed) && parsed > maxStock) {
+        inputEl.value = maxStock;
+        flashStockWarning(`Max available: ${fmt(maxStock)} ${item.unit}`);
+      }
+    }
+
     function setSimpleExactQty(id, rawVal) {
       const item = catalog.find(i => i.id === id);
       if (!item) return;
       const key = cartKey(id, "");
+      const maxStock = roundQty(Math.max(0, Number(item.stock) || 0));
       const val = roundQty(parseFloat(rawVal));
+
       if (!Number.isFinite(val) || val <= 0) {
         delete cart[key];
+      } else if (val > maxStock) {
+        cart[key] = { id, variant: "", qty: maxStock };
+        flashStockWarning(`Max available: ${fmt(maxStock)} ${item.unit}`);
       } else {
-        cart[key] = { id, variant: "", qty: Math.min(item.stock, val) };
+        cart[key] = { id, variant: "", qty: val };
       }
       renderCatalog();
       updateMainButton();
@@ -863,8 +989,12 @@
       if (!item) return;
 
       const maxAllowed = getMaxStockForVariant(item, entry.variant, cart);
-      const next = roundQty(Math.max(0, Math.min(maxAllowed, entry.qty + delta)));
+      if (delta > 0 && entry.qty >= maxAllowed) {
+        flashStockWarning(`Only ${fmt(maxAllowed)} ${item.unit} available`);
+        return;
+      }
 
+      const next = roundQty(Math.max(0, Math.min(maxAllowed, entry.qty + delta)));
       if (next <= 0) {
         delete cart[key];
       } else {
@@ -904,7 +1034,10 @@
         if (item && entry.qty > 0) {
           const unitPrice = getUnitPrice(item, entry.variant);
           const maxStock = getMaxStockForVariant(item, entry.variant, cart);
-          const lineTotal = roundQty(unitPrice * entry.qty);
+          const safeQty = Math.min(maxStock, entry.qty);
+          if (safeQty <= 0) continue;
+
+          const lineTotal = roundQty(unitPrice * safeQty);
           totalETB = roundQty(totalETB + lineTotal);
           lineCount += 1;
           entries.push({
@@ -913,7 +1046,7 @@
             price: unitPrice,
             maxStock: maxStock,
             variant: entry.variant || "",
-            qty: entry.qty,
+            qty: safeQty,
             lineTotal
           });
         }
@@ -948,6 +1081,7 @@
         const selectedVariants = getCartEntriesForItem(item.id);
         const totalInCart = selectedVariants.reduce((acc, e) => roundQty(acc + e.qty), 0);
         const lowStock = item.stock <= 10;
+        const canIncrementSimple = totalInCart < item.stock;
         const fallbackIcon = getCategoryFallbackIcon(item.category);
         const safeId = escapeHtml(item.id).replace(/'/g, "\\'");
 
@@ -1021,10 +1155,14 @@
                 −
               </button>
               <input type="number" step="any" min="0" max="${item.stock}" value="${totalInCart}"
+                oninput="handleSimpleInputLive('${safeId}', this)"
                 onchange="setSimpleExactQty('${safeId}', this.value)"
                 class="w-full min-w-0 text-center font-bold text-xs bg-transparent focus:outline-none" />
               <button onclick="updateSimpleQty('${safeId}', 1)"
-                class="w-7 h-7 rounded-lg accent-btn font-bold text-sm flex items-center justify-center active:scale-95 shadow-sm">
+                ${!canIncrementSimple ? "disabled" : ""}
+                class="w-7 h-7 rounded-lg font-bold text-sm flex items-center justify-center shadow-sm ${
+                  !canIncrementSimple ? "bg-black/10 hint-text opacity-50" : "accent-btn active:scale-95"
+                }">
                 +
               </button>
             </div>
@@ -1109,7 +1247,7 @@
           <div class="py-2.5 flex justify-between items-center gap-2">
             <div class="min-w-0 flex-1">
               <div class="font-medium">${escapeHtml(e.name)}${variantBadge}</div>
-              <div class="text-xs hint-text">${fmt(e.price)} ETB / ${escapeHtml(e.unit)}</div>
+              <div class="text-xs hint-text">${fmt(e.price)} ETB / ${escapeHtml(e.unit)} <span class="opacity-75">(${fmt(e.maxStock)} max)</span></div>
               ${hasMoreOptions ? `
                 <button onclick="editItemVariantsFromCheckout('${safeId}')"
                   class="mt-1 text-[11px] font-semibold text-blue-500">
@@ -1185,7 +1323,11 @@
         });
 
         const data = await res.json();
-        if (!data.ok) throw new Error(data.error || "Order failed");
+        if (!data.ok) {
+          await loadCatalog();
+          if (currentScreen === "checkout") openCheckout();
+          throw new Error(data.error || "Order failed");
+        }
 
         saveLocalOrderId(data.orderId);
         if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
