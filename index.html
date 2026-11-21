@@ -41,7 +41,7 @@
 
   <script>
     // PASTE YOUR DEPLOYED GOOGLE APPS SCRIPT WEB APP (/exec) URL BELOW:
-    const API_URL = "https://script.google.com/macros/s/AKfycbzbCBWPh82bDXjQ5GT0esMETuwz295OTAvDeE0eZ8gMfpbG2WAV--uCrNOKaAAsWsPV/exec";
+    const API_URL = "YOUR_APPS_SCRIPT_WEB_APP_URL";
   </script>
 
   <!-- Header -->
@@ -91,11 +91,10 @@
     <div id="catalogList" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3"></div>
   </main>
 
-  <!-- Multi-Variant Bottom-Sheet Modal (Select multiple sizes/colors/types at once) -->
+  <!-- Multi-Variant Bottom-Sheet Modal -->
   <div id="variantModal" onclick="if (event.target === this) closeVariantModal();"
     class="hidden fixed inset-0 z-40 bg-black/50 backdrop-blur-[1px] flex items-end sm:items-center justify-center">
     <div class="card-surface w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-5 shadow-2xl flex flex-col max-h-[88vh]">
-      <!-- Modal Header -->
       <div class="flex items-start justify-between gap-3 pb-3 border-b border-black/10 shrink-0">
         <div class="min-w-0">
           <div id="modalCategory" class="text-[10px] uppercase tracking-wider font-semibold hint-text"></div>
@@ -107,7 +106,6 @@
         </button>
       </div>
 
-      <!-- Multi-Option Rows (All variants visible with individual steppers) -->
       <div class="py-3 overflow-y-auto space-y-2.5 flex-1">
         <div class="flex items-center justify-between text-[11px] font-semibold hint-text px-0.5">
           <span>Select one or more options</span>
@@ -118,7 +116,6 @@
         <div id="modalOptionsList" class="space-y-2"></div>
       </div>
 
-      <!-- Modal Footer Summary + Save Button -->
       <div class="pt-3 border-t border-black/10 space-y-2.5 shrink-0">
         <div id="modalDraftSummary" class="flex items-center justify-between text-xs px-0.5">
           <span class="hint-text">No options selected</span>
@@ -251,15 +248,41 @@
       else alert(msg);
     }
 
+    function getOptionObj(item, variantLabel) {
+      if (!item || !variantLabel || !Array.isArray(item.options)) return null;
+      return item.options.find(o => (typeof o === "object" ? o.label : o) === variantLabel) || null;
+    }
+
     function getUnitPrice(item, variantLabel) {
       if (!item) return 0;
-      if (variantLabel && Array.isArray(item.options)) {
-        const optObj = item.options.find(o => (typeof o === "object" ? o.label : o) === variantLabel);
-        if (optObj && typeof optObj === "object" && Number.isFinite(Number(optObj.price))) {
-          return Number(optObj.price);
-        }
+      const optObj = getOptionObj(item, variantLabel);
+      if (optObj && typeof optObj === "object" && Number.isFinite(Number(optObj.price))) {
+        return Number(optObj.price);
       }
       return Number(item.price) || 0;
+    }
+
+    /**
+     * Returns max orderable quantity for a specific (item, variantLabel) given other quantities already in `sourceMap`.
+     */
+    function getMaxStockForVariant(item, variantLabel, sourceMap = cart) {
+      if (!item) return 0;
+      const optObj = getOptionObj(item, variantLabel);
+
+      // Case 1: Option defines its own individual stock count
+      if (optObj && typeof optObj === "object" && optObj.hasOwnStock) {
+        return roundQty(Math.max(0, Number(optObj.stock) || 0));
+      }
+
+      // Case 2: Option shares the row's total stock pool with other options
+      let otherReserved = 0;
+      for (const k in sourceMap) {
+        const entry = sourceMap[k];
+        if (entry && entry.id === item.id && entry.variant !== variantLabel) {
+          otherReserved = roundQty(otherReserved + (Number(entry.qty) || 0));
+        }
+      }
+      return roundQty(Math.max(0, (Number(item.stock) || 0) - otherReserved));
     }
 
     function getDisplayPriceSummary(item) {
@@ -283,16 +306,6 @@
         }
       }
       return list;
-    }
-
-    function getTotalReservedForItem(itemId, excludeVariant = null) {
-      let sum = 0;
-      for (const k in cart) {
-        if (cart[k].id === itemId && cart[k].variant !== excludeVariant) {
-          sum = roundQty(sum + cart[k].qty);
-        }
-      }
-      return sum;
     }
 
     function getLocalOrderIds() {
@@ -487,19 +500,13 @@
           validVariant = matchedLabel;
         }
 
-        let alreadyReserved = 0;
-        for (const k in nextCart) {
-          if (nextCart[k].id === dbItem.id) {
-            alreadyReserved = roundQty(alreadyReserved + nextCart[k].qty);
-          }
-        }
-        const remainingStock = roundQty(Math.max(0, dbItem.stock - alreadyReserved));
-        if (remainingStock <= 0) {
-          notices.push(`• ${dbItem.name}${validVariant ? ` [${validVariant}]` : ""}: stock limit reached`);
+        const availableStock = getMaxStockForVariant(dbItem, validVariant, nextCart);
+        if (availableStock <= 0) {
+          notices.push(`• ${dbItem.name}${validVariant ? ` [${validVariant}]` : ""}: currently out of stock`);
           continue;
         }
 
-        const finalQty = Math.min(remainingStock, requestedQty);
+        const finalQty = Math.min(availableStock, requestedQty);
         if (finalQty < requestedQty) {
           notices.push(`• ${dbItem.name}${validVariant ? ` [${validVariant}]` : ""}: adjusted from ${fmt(requestedQty)} to ${fmt(finalQty)} ${dbItem.unit} (max in stock)`);
         }
@@ -600,7 +607,7 @@
     }
 
     /* ---------------------------------------------------------------
-       MULTI-VARIANT BOTTOM-SHEET MODAL
+       MULTI-VARIANT BOTTOM-SHEET MODAL (WITH PER-OPTION STOCK)
     ---------------------------------------------------------------- */
 
     function openVariantModal(itemId) {
@@ -610,7 +617,6 @@
       modalItem = item;
       modalDraft = {};
 
-      // Pre-populate draft with any quantities already in cart for each variant of this item
       item.options.forEach(opt => {
         const label = typeof opt === "object" ? opt.label : opt;
         const existing = cart[cartKey(item.id, label)];
@@ -632,29 +638,44 @@
     }
 
     function getModalDraftTotals() {
-      if (!modalItem) return { totalQty: 0, totalETB: 0, selectedCount: 0 };
+      if (!modalItem) return { totalQty: 0, sharedPoolQty: 0, totalETB: 0, selectedCount: 0 };
       let totalQty = 0;
+      let sharedPoolQty = 0;
       let totalETB = 0;
       let selectedCount = 0;
 
       for (const label in modalDraft) {
         const q = roundQty(modalDraft[label]);
         if (q > 0) {
+          const optObj = getOptionObj(modalItem, label);
           const unitPrice = getUnitPrice(modalItem, label);
           totalQty = roundQty(totalQty + q);
+          if (!optObj || !optObj.hasOwnStock) {
+            sharedPoolQty = roundQty(sharedPoolQty + q);
+          }
           totalETB = roundQty(totalETB + roundQty(unitPrice * q));
           selectedCount += 1;
         }
       }
-      return { totalQty, totalETB, selectedCount };
+      return { totalQty, sharedPoolQty, totalETB, selectedCount };
+    }
+
+    function getModalMaxForOption(optLabel) {
+      if (!modalItem) return 0;
+      const optObj = getOptionObj(modalItem, optLabel);
+      if (optObj && typeof optObj === "object" && optObj.hasOwnStock) {
+        return roundQty(Math.max(0, Number(optObj.stock) || 0));
+      }
+      const { sharedPoolQty } = getModalDraftTotals();
+      const current = roundQty(modalDraft[optLabel] || 0);
+      const otherShared = roundQty(sharedPoolQty - current);
+      return roundQty(Math.max(0, (Number(modalItem.stock) || 0) - otherShared));
     }
 
     function stepDraftVariant(optLabel, delta) {
       if (!modalItem) return;
-      const { totalQty } = getModalDraftTotals();
       const current = roundQty(modalDraft[optLabel] || 0);
-      const otherQty = roundQty(totalQty - current);
-      const maxForThis = roundQty(Math.max(0, modalItem.stock - otherQty));
+      const maxForThis = getModalMaxForOption(optLabel);
       const next = roundQty(Math.max(0, Math.min(maxForThis, current + delta)));
 
       modalDraft[optLabel] = next;
@@ -664,10 +685,7 @@
 
     function setDraftVariantExact(optLabel, rawVal) {
       if (!modalItem) return;
-      const { totalQty } = getModalDraftTotals();
-      const current = roundQty(modalDraft[optLabel] || 0);
-      const otherQty = roundQty(totalQty - current);
-      const maxForThis = roundQty(Math.max(0, modalItem.stock - otherQty));
+      const maxForThis = getModalMaxForOption(optLabel);
       const parsed = roundQty(parseFloat(rawVal));
 
       modalDraft[optLabel] = Number.isFinite(parsed) && parsed > 0 ? Math.min(maxForThis, parsed) : 0;
@@ -685,11 +703,16 @@
 
     function renderModalOptions() {
       if (!modalItem) return;
-      const { totalQty, totalETB, selectedCount } = getModalDraftTotals();
-      const remainingStock = roundQty(Math.max(0, modalItem.stock - totalQty));
+      const { totalQty, sharedPoolQty, totalETB, selectedCount } = getModalDraftTotals();
 
-      document.getElementById("modalStockSummary").textContent =
-        `Total stock: ${fmt(modalItem.stock)} ${modalItem.unit} • ${fmt(remainingStock)} remaining`;
+      if (modalItem.hasPerOptionStock) {
+        document.getElementById("modalStockSummary").textContent =
+          `Total across options: ${fmt(modalItem.stock)} ${modalItem.unit}`;
+      } else {
+        const remainingShared = roundQty(Math.max(0, modalItem.stock - sharedPoolQty));
+        document.getElementById("modalStockSummary").textContent =
+          `Total stock: ${fmt(modalItem.stock)} ${modalItem.unit} • ${fmt(remainingShared)} remaining`;
+      }
 
       const clearBtn = document.getElementById("modalClearAllBtn");
       if (selectedCount > 0) clearBtn.classList.remove("hidden");
@@ -698,28 +721,44 @@
       document.getElementById("modalOptionsList").innerHTML = modalItem.options.map(opt => {
         const label = typeof opt === "object" ? opt.label : opt;
         const optPrice = typeof opt === "object" ? Number(opt.price) : Number(modalItem.price);
+        const hasOwnStock = typeof opt === "object" && Boolean(opt.hasOwnStock);
         const qty = roundQty(modalDraft[label] || 0);
-        const maxForThis = roundQty(qty + remainingStock);
+        const maxForThis = getModalMaxForOption(label);
+        const remainingForThis = roundQty(Math.max(0, maxForThis - qty));
+        const isOutOfStock = maxForThis <= 0;
+        const isLowStock = !isOutOfStock && maxForThis <= 10;
         const safeLabel = escapeHtml(label).replace(/'/g, "\\'");
         const lineSub = qty > 0 ? ` • ${fmt(roundQty(optPrice * qty))} ETB` : "";
 
+        const stockBadgeHtml = hasOwnStock ? (
+          isOutOfStock
+            ? `<span class="ml-1.5 px-1.5 py-0.5 rounded bg-red-500/15 text-red-600 text-[10px] font-bold">Out of stock</span>`
+            : `<span class="ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-semibold ${isLowStock ? "bg-amber-500/15 text-amber-600" : "bg-black/10 hint-text"}">${fmt(maxForThis)} ${escapeHtml(modalItem.unit)} left</span>`
+        ) : "";
+
         return `
           <div class="flex items-center justify-between gap-2.5 p-2.5 rounded-2xl border transition ${
-            qty > 0 ? "border-blue-500 bg-blue-500/5" : "border-black/10 bg-black/[0.03]"
+            isOutOfStock
+              ? "border-black/5 bg-black/[0.02] opacity-60"
+              : (qty > 0 ? "border-blue-500 bg-blue-500/5" : "border-black/10 bg-black/[0.03]")
           }">
             <div class="min-w-0 flex-1">
-              <div class="font-semibold text-xs truncate">${escapeHtml(label)}</div>
+              <div class="font-semibold text-xs flex items-center flex-wrap gap-y-0.5">
+                <span class="truncate">${escapeHtml(label)}</span>
+                ${stockBadgeHtml}
+              </div>
               <div class="text-[11px] font-bold text-blue-600 mt-0.5">
                 ${fmt(optPrice)} <span class="font-normal hint-text">ETB / ${escapeHtml(modalItem.unit)}</span><span class="font-semibold text-emerald-600">${lineSub}</span>
               </div>
             </div>
 
-            ${qty === 0 ? `
+            ${isOutOfStock ? `
+              <span class="px-2.5 py-1.5 rounded-xl text-[11px] font-semibold bg-black/5 hint-text shrink-0">
+                Sold Out
+              </span>
+            ` : (qty === 0 ? `
               <button onclick="stepDraftVariant('${safeLabel}', 1)"
-                ${remainingStock <= 0 ? "disabled" : ""}
-                class="px-3.5 py-1.5 rounded-xl text-xs font-bold shadow-sm transition shrink-0 ${
-                  remainingStock <= 0 ? "bg-black/10 hint-text opacity-50" : "accent-btn active:scale-95"
-                }">
+                class="px-3.5 py-1.5 rounded-xl text-xs font-bold shadow-sm transition shrink-0 accent-btn active:scale-95">
                 + Add
               </button>
             ` : `
@@ -732,14 +771,14 @@
                   onchange="setDraftVariantExact('${safeLabel}', this.value)"
                   class="w-12 text-center font-bold text-xs bg-transparent focus:outline-none" />
                 <button onclick="stepDraftVariant('${safeLabel}', 1)"
-                  ${remainingStock <= 0 ? "disabled" : ""}
+                  ${remainingForThis <= 0 ? "disabled" : ""}
                   class="w-7 h-7 rounded-lg font-bold text-sm flex items-center justify-center shadow-sm ${
-                    remainingStock <= 0 ? "bg-black/10 hint-text opacity-50" : "accent-btn active:scale-95"
+                    remainingForThis <= 0 ? "bg-black/10 hint-text opacity-50" : "accent-btn active:scale-95"
                   }">
                   +
                 </button>
               </div>
-            `}
+            `)}
           </div>
         `;
       }).join("");
@@ -823,8 +862,7 @@
       const item = catalog.find(i => i.id === entry.id);
       if (!item) return;
 
-      const otherReserved = getTotalReservedForItem(entry.id, entry.variant);
-      const maxAllowed = roundQty(Math.max(0, item.stock - otherReserved));
+      const maxAllowed = getMaxStockForVariant(item, entry.variant, cart);
       const next = roundQty(Math.max(0, Math.min(maxAllowed, entry.qty + delta)));
 
       if (next <= 0) {
@@ -865,6 +903,7 @@
         const item = catalog.find(i => i.id === entry.id);
         if (item && entry.qty > 0) {
           const unitPrice = getUnitPrice(item, entry.variant);
+          const maxStock = getMaxStockForVariant(item, entry.variant, cart);
           const lineTotal = roundQty(unitPrice * entry.qty);
           totalETB = roundQty(totalETB + lineTotal);
           lineCount += 1;
@@ -872,6 +911,7 @@
             key: k,
             ...item,
             price: unitPrice,
+            maxStock: maxStock,
             variant: entry.variant || "",
             qty: entry.qty,
             lineTotal
@@ -942,7 +982,6 @@
           </div>
         `;
 
-        // Show selected option pills directly on the card when multiple variants are chosen
         const selectedPillsHtml = (hasVariants && selectedVariants.length > 0) ? `
           <div class="flex flex-wrap gap-1 mt-1">
             ${selectedVariants.map(sv => `
@@ -1061,6 +1100,7 @@
         const safeKey = escapeHtml(e.key).replace(/'/g, "\\'");
         const safeId = escapeHtml(e.id).replace(/'/g, "\\'");
         const hasMoreOptions = Array.isArray(e.options) && e.options.length > 1;
+        const canIncrement = e.qty < e.maxStock;
         const variantBadge = e.variant
           ? `<span class="inline-block ml-1.5 px-2 py-0.5 rounded-md text-[10px] font-bold bg-blue-500/15 text-blue-600">${escapeHtml(e.variant)}</span>`
           : "";
@@ -1087,7 +1127,10 @@
                 </button>
                 <span class="px-1.5 font-bold text-xs">${fmt(e.qty)}</span>
                 <button onclick="updateCartLineQty('${safeKey}', 1)"
-                  class="w-6 h-6 rounded accent-btn font-bold text-xs flex items-center justify-center">
+                  ${!canIncrement ? "disabled" : ""}
+                  class="w-6 h-6 rounded font-bold text-xs flex items-center justify-center ${
+                    !canIncrement ? "bg-black/10 hint-text opacity-50" : "accent-btn"
+                  }">
                   +
                 </button>
               </div>
