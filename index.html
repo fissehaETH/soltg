@@ -177,33 +177,63 @@
         <span>Estimated Total</span>
         <span id="checkoutTotal">0 ETB</span>
       </div>
+
+      <!-- Proforma Quote Share / Copy Action -->
+      <div class="pt-1">
+        <button id="shareQuoteBtn" type="button" onclick="shareProformaQuote()"
+          class="w-full py-2.5 px-3 rounded-xl text-xs font-bold bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/20 hover:bg-emerald-500/15 active:scale-95 transition flex items-center justify-center gap-1.5">
+          <span>📄 Share / Copy Proforma Quote</span>
+        </button>
+      </div>
     </div>
 
     <!-- Delivery Form -->
     <div class="card-surface rounded-2xl p-4 shadow-sm space-y-3">
-      <h3 class="font-semibold text-sm">🚚 Delivery Details</h3>
+      <div class="flex items-center justify-between gap-2">
+        <h3 class="font-semibold text-sm">🚚 Delivery Details</h3>
+        <div class="flex items-center gap-2">
+          <span id="savedProfileBadge" class="hidden text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600">
+            ✓ Auto-saved
+          </span>
+          <button id="clearProfileBtn" type="button" onclick="clearSavedDeliveryProfile()"
+            class="hidden text-[11px] font-semibold text-red-500 hover:underline">
+            Clear
+          </button>
+        </div>
+      </div>
 
       <div>
         <label class="block text-xs hint-text mb-1">Full Name *</label>
         <input id="inputName" type="text" placeholder="Your name"
+          oninput="saveDeliveryProfile()"
           class="w-full rounded-xl px-3 py-2.5 text-sm bg-black/5 focus:outline-none focus:ring-2 focus:ring-blue-500" />
       </div>
 
       <div>
         <label class="block text-xs hint-text mb-1">Phone Number *</label>
         <input id="inputPhone" type="tel" placeholder="e.g., 0911 00 00 00"
+          oninput="saveDeliveryProfile()"
           class="w-full rounded-xl px-3 py-2.5 text-sm bg-black/5 focus:outline-none focus:ring-2 focus:ring-blue-500" />
       </div>
 
       <div>
-        <label class="block text-xs hint-text mb-1">Delivery Location / Site *</label>
+        <div class="flex items-center justify-between mb-1">
+          <label class="block text-xs hint-text">Delivery Location / Site *</label>
+          <button id="gpsPinBtn" type="button" onclick="captureGpsLocation()"
+            class="text-[11px] font-bold text-blue-600 bg-blue-500/10 hover:bg-blue-500/15 px-2.5 py-1 rounded-lg active:scale-95 transition flex items-center gap-1">
+            <span>📍 Use GPS Pin</span>
+          </button>
+        </div>
         <input id="inputLocation" type="text" placeholder="e.g., Hawassa, Tabor Sub-city, near main road"
+          oninput="saveDeliveryProfile()"
           class="w-full rounded-xl px-3 py-2.5 text-sm bg-black/5 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        <p id="gpsStatusHint" class="hidden text-[11px] text-emerald-600 font-medium mt-1"></p>
       </div>
 
       <div>
         <label class="block text-xs hint-text mb-1">Site Notes (Optional)</label>
         <input id="inputNotes" type="text" placeholder="e.g., Truck access gate on east side"
+          oninput="saveDeliveryProfile()"
           class="w-full rounded-xl px-3 py-2.5 text-sm bg-black/5 focus:outline-none focus:ring-2 focus:ring-blue-500" />
       </div>
     </div>
@@ -240,6 +270,8 @@
       tg.expand();
     }
 
+    const PROFILE_STORAGE_KEY = "sol_delivery_profile";
+
     let catalog = [];
     let recentOrders = [];
     let knownOrderStatuses = {}; // { [orderId]: status }
@@ -251,6 +283,7 @@
     let currentScreen = "catalog"; // "catalog" | "orders" | "checkout" | "success"
     let isSubmitting = false;
     let isFetchingOrders = false;
+    let isLocatingGps = false;
     let cancellingOrderId = null;
     let cancelCountdownInterval = null;
     let orderPollInterval = null;
@@ -261,8 +294,233 @@
     let bannerTimer = null;
 
     const tgUser = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) ? tg.initDataUnsafe.user : {};
-    if (tgUser.first_name) {
-      document.getElementById("inputName").value = [tgUser.first_name, tgUser.last_name].filter(Boolean).join(" ");
+    const tgDefaultName = [tgUser.first_name, tgUser.last_name].filter(Boolean).join(" ");
+
+    /* ---------------------------------------------------------------
+       SAVED DELIVERY PROFILE (AUTO-SAVE & RESTORE)
+    ---------------------------------------------------------------- */
+
+    function loadDeliveryProfile() {
+      let saved = {};
+      try {
+        saved = JSON.parse(localStorage.getItem(PROFILE_STORAGE_KEY) || "{}");
+      } catch (e) {
+        saved = {};
+      }
+
+      const nameVal = (saved.name || tgDefaultName || "").trim();
+      const phoneVal = (saved.phone || "").trim();
+      const locationVal = (saved.location || "").trim();
+      const notesVal = (saved.notes || "").trim();
+
+      document.getElementById("inputName").value = nameVal;
+      document.getElementById("inputPhone").value = phoneVal;
+      document.getElementById("inputLocation").value = locationVal;
+      document.getElementById("inputNotes").value = notesVal;
+
+      updateSavedProfileIndicators(Boolean(saved.phone || saved.location || saved.notes));
+    }
+
+    function saveDeliveryProfile() {
+      const profile = {
+        name: document.getElementById("inputName").value.trim(),
+        phone: document.getElementById("inputPhone").value.trim(),
+        location: document.getElementById("inputLocation").value.trim(),
+        notes: document.getElementById("inputNotes").value.trim()
+      };
+      try {
+        localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profile));
+      } catch (e) {}
+      updateSavedProfileIndicators(Boolean(profile.phone || profile.location || profile.notes));
+    }
+
+    function updateSavedProfileIndicators(hasSavedData) {
+      const badgeEl = document.getElementById("savedProfileBadge");
+      const clearBtn = document.getElementById("clearProfileBtn");
+      if (hasSavedData) {
+        badgeEl.classList.remove("hidden");
+        clearBtn.classList.remove("hidden");
+      } else {
+        badgeEl.classList.add("hidden");
+        clearBtn.classList.add("hidden");
+      }
+    }
+
+    function clearSavedDeliveryProfile() {
+      try {
+        localStorage.removeItem(PROFILE_STORAGE_KEY);
+      } catch (e) {}
+      document.getElementById("inputName").value = tgDefaultName || "";
+      document.getElementById("inputPhone").value = "";
+      document.getElementById("inputLocation").value = "";
+      document.getElementById("inputNotes").value = "";
+      document.getElementById("gpsStatusHint").classList.add("hidden");
+      updateSavedProfileIndicators(false);
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+    }
+
+    /* ---------------------------------------------------------------
+       1-TAP GPS LOCATION PIN CAPTURE
+    ---------------------------------------------------------------- */
+
+    function captureGpsLocation() {
+      if (isLocatingGps) return;
+      if (!navigator.geolocation) {
+        showToast("GPS location is not supported on this device or browser.");
+        return;
+      }
+
+      isLocatingGps = true;
+      const btn = document.getElementById("gpsPinBtn");
+      const hintEl = document.getElementById("gpsStatusHint");
+      const locInput = document.getElementById("inputLocation");
+
+      btn.disabled = true;
+      btn.innerHTML = `<span>⏳ Locating...</span>`;
+
+      navigator.geolocation.getCurrentPosition(
+        pos => {
+          isLocatingGps = false;
+          btn.disabled = false;
+          btn.innerHTML = `<span>📍 Use GPS Pin</span>`;
+
+          const lat = pos.coords.latitude.toFixed(6);
+          const lng = pos.coords.longitude.toFixed(6);
+          const accuracy = Math.round(pos.coords.accuracy || 0);
+          const mapsUrl = `https://maps.google.com/?q=${lat},${lng}`;
+
+          // Strip any previously inserted Google Maps link while keeping typed landmarks
+          const cleanedExisting = locInput.value
+            .replace(/\s*\(?https?:\/\/maps\.google\.com\/\?q=[^\s)]+\)?/gi, "")
+            .trim();
+
+          locInput.value = cleanedExisting
+            ? `${cleanedExisting} (${mapsUrl})`
+            : `GPS Pin: ${mapsUrl}`;
+
+          saveDeliveryProfile();
+
+          hintEl.textContent = `✓ GPS pin attached (±${accuracy}m accuracy)`;
+          hintEl.classList.remove("hidden");
+          flashBanner("📍 GPS site location pin added!", "bg-emerald-600", "success", 2200);
+        },
+        err => {
+          isLocatingGps = false;
+          btn.disabled = false;
+          btn.innerHTML = `<span>📍 Use GPS Pin</span>`;
+
+          let reason = "Could not get GPS coordinates. Please enable Location services and try again.";
+          if (err && err.code === 1) {
+            reason = "Location permission denied. Please allow location access in your phone/Telegram settings.";
+          } else if (err && err.code === 3) {
+            reason = "GPS timed out. Move near an open area or type your site landmark manually.";
+          }
+          if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
+          showToast(reason);
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 12000,
+          maximumAge: 30000
+        }
+      );
+    }
+
+    /* ---------------------------------------------------------------
+       PROFORMA QUOTE GENERATOR & SHARE / COPY
+    ---------------------------------------------------------------- */
+
+    function buildProformaQuoteText() {
+      const { totalETB, entries } = getCartTotals();
+      if (!entries.length) return "";
+
+      const now = new Date();
+      const dateStr = now.toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "short",
+        day: "numeric"
+      });
+
+      const customerName = document.getElementById("inputName").value.trim();
+      const phone = document.getElementById("inputPhone").value.trim();
+      const location = document.getElementById("inputLocation").value.trim();
+      const notes = document.getElementById("inputNotes").value.trim();
+
+      const lines = [
+        "🏗️ SOLOMON BUILDING MATERIALS — PROFORMA QUOTE",
+        `Date: ${dateStr}`,
+        "----------------------------------------"
+      ];
+
+      entries.forEach((e, idx) => {
+        const title = e.variant ? `${e.name} [${e.variant}]` : e.name;
+        lines.push(`${idx + 1}. ${title}`);
+        lines.push(`   ${fmt(e.qty)} ${e.unit} × ${fmt(e.price)} ETB = ${fmt(e.lineTotal)} ETB`);
+      });
+
+      lines.push("----------------------------------------");
+      lines.push(`ESTIMATED TOTAL: ${fmt(totalETB)} ETB`);
+
+      if (customerName || phone || location) {
+        lines.push("");
+        if (customerName) lines.push(`Prepared for: ${customerName}`);
+        if (phone) lines.push(`Phone: ${phone}`);
+        if (location) lines.push(`Delivery Site: ${location}`);
+        if (notes) lines.push(`Notes: ${notes}`);
+      }
+
+      lines.push("");
+      lines.push("*Prices & stock are live at time of quote and subject to confirmation upon order.");
+
+      return lines.join("\n");
+    }
+
+    async function shareProformaQuote() {
+      const quoteText = buildProformaQuoteText();
+      if (!quoteText) return;
+
+      const btn = document.getElementById("shareQuoteBtn");
+      const originalHtml = btn.innerHTML;
+
+      // Try native mobile share sheet first (allows direct sharing to Telegram, WhatsApp, SMS, etc.)
+      if (navigator.share) {
+        try {
+          await navigator.share({
+            title: "Solomon Building Materials — Proforma Quote",
+            text: quoteText
+          });
+          if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+          return;
+        } catch (err) {
+          // If user explicitly dismissed the share dialog, stop without erroring
+          if (err && err.name === "AbortError") return;
+          // Otherwise fall through to clipboard copy
+        }
+      }
+
+      // Clipboard fallback (Desktop browsers / Telegram WebView without navigator.share)
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(quoteText);
+        } else {
+          const ta = document.createElement("textarea");
+          ta.value = quoteText;
+          ta.style.position = "fixed";
+          ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          document.body.removeChild(ta);
+        }
+
+        btn.innerHTML = `<span>✓ Proforma Quote Copied to Clipboard!</span>`;
+        flashBanner("📋 Proforma quote copied! Paste into Telegram or WhatsApp.", "bg-emerald-600", "success", 2800);
+        setTimeout(() => {
+          btn.innerHTML = originalHtml;
+        }, 2500);
+      } catch (err) {
+        showToast(quoteText);
+      }
     }
 
     function cartKey(id, variant) {
@@ -429,7 +687,6 @@
         const hasIdentity = Boolean(tgUser.id) || getLocalOrderIds().length > 0;
         if (!hasIdentity) return;
 
-        // Poll silently in the background; re-render immediately if on Orders screen
         loadOrders({ silent: true });
       }, 12000);
     }
@@ -566,9 +823,6 @@
       }
     }
 
-    /**
-     * Returns status-tailored UI metadata: colors, icon, customer guidance message, and progress step index.
-     */
     function getStatusPresentation(status) {
       const s = String(status || "Pending").trim();
       switch (s) {
@@ -632,7 +886,7 @@
     }
 
     function renderOrderProgressStepperHtml(meta) {
-      if (meta.stepIndex < 0) return ""; // Cancelled orders show the red callout instead of delivery steps
+      if (meta.stepIndex < 0) return "";
 
       const steps = [
         { label: "Received", icon: "⏳" },
@@ -665,6 +919,25 @@
               `;
             }).join("")}
           </div>
+        </div>
+      `;
+    }
+
+    function formatContactWithMapLink(contactStr) {
+      const raw = String(contactStr || "");
+      const urlMatch = raw.match(/https?:\/\/maps\.google\.com\/\?q=[^\s)]+/i);
+      if (!urlMatch) {
+        return `<span class="hint-text truncate max-w-[58%]">📍 ${escapeHtml(raw)}</span>`;
+      }
+      const mapUrl = urlMatch[0];
+      const textOnly = raw.replace(mapUrl, "").replace(/\(\s*\)/g, "").trim();
+      return `
+        <div class="flex items-center gap-1.5 min-w-0 max-w-[62%]">
+          <span class="hint-text truncate">📍 ${escapeHtml(textOnly || "GPS Site")}</span>
+          <a href="${escapeHtml(mapUrl)}" target="_blank" rel="noopener noreferrer"
+            class="shrink-0 text-[10px] font-bold text-blue-600 bg-blue-500/10 px-1.5 py-0.5 rounded">
+            🗺️ Pin
+          </a>
         </div>
       `;
     }
@@ -741,8 +1014,8 @@
 
             <!-- Destination & Total -->
             <div class="pt-2 border-t border-black/5 flex items-center justify-between gap-2 text-xs">
-              <span class="hint-text truncate max-w-[55%]">📍 ${escapeHtml(ord.contact)}</span>
-              <span class="font-bold text-sm">${fmt(ord.total)} ETB</span>
+              ${formatContactWithMapLink(ord.contact)}
+              <span class="font-bold text-sm shrink-0">${fmt(ord.total)} ETB</span>
             </div>
 
             <!-- Actions -->
@@ -882,6 +1155,7 @@
         if (parts[1] && !document.getElementById("inputLocation").value.trim()) {
           document.getElementById("inputLocation").value = parts[1].replace(/\s*\([^)]*\)\s*$/, "").trim();
         }
+        saveDeliveryProfile();
       }
 
       cart = nextCart;
@@ -1612,6 +1886,8 @@
         return;
       }
 
+      saveDeliveryProfile();
+
       isSubmitting = true;
       if (tg && tg.MainButton) tg.MainButton.showProgress();
       document.getElementById("fallbackSubmitBtn").disabled = true;
@@ -1675,6 +1951,7 @@
       });
     }
 
+    loadDeliveryProfile();
     loadCatalog();
     loadOrders({ silent: true });
     startOrderStatusPolling();
