@@ -936,7 +936,7 @@
             boxCls: "bg-red-500/10 border-red-500/20 text-red-700",
             bannerBg: "bg-red-600",
             headline: "Order Cancelled",
-            description: "This order was cancelled and reserved stock has been released. You can reorder anytime below."
+            description: "This order was cancelled. You can reorder anytime below."
           };
         default: // "Pending"
           return {
@@ -1113,7 +1113,7 @@
     async function cancelRecentOrder(orderId) {
       if (cancellingOrderId) return;
 
-      const confirmed = await confirmAction(`Cancel order ${orderId}? Reserved stock will be released immediately.`);
+      const confirmed = await confirmAction(`Cancel order ${orderId}? `);
       if (!confirmed) return;
 
       cancellingOrderId = orderId;
