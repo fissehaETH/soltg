@@ -599,7 +599,10 @@
       if (!Array.isArray(item.options) || !item.options.length) {
         return `${fmt(item.price)} <span class="text-[11px] font-normal hint-text">ETB / ${escapeHtml(item.unit)}</span>`;
       }
-      const prices = item.options.map(o => (typeof o === "object" ? Number(o.price) : Number(item.price)));
+      const prices = item.options.map(o => {
+        const label = typeof o === "object" ? o.label : o;
+        return getUnitPrice(item, label);
+      }).filter(Number.isFinite);
       const minP = Math.min(...prices);
       const maxP = Math.max(...prices);
       if (minP !== maxP) {
@@ -620,7 +623,8 @@
 
     function getLocalOrderIds() {
       try {
-        return JSON.parse(localStorage.getItem("sol_order_ids") || "[]");
+        const parsed = JSON.parse(localStorage.getItem("sol_order_ids") || "[]");
+        return Array.isArray(parsed) ? parsed.filter(id => typeof id === "string" && id.trim()) : [];
       } catch (e) {
         return [];
       }
@@ -1414,7 +1418,7 @@
 
       document.getElementById("modalOptionsList").innerHTML = modalItem.options.map(opt => {
         const label = typeof opt === "object" ? opt.label : opt;
-        const optPrice = typeof opt === "object" ? Number(opt.price) : Number(modalItem.price);
+        const optPrice = getUnitPrice(modalItem, label);
         const hasOwnStock = typeof opt === "object" && Boolean(opt.hasOwnStock);
         const qty = roundQty(modalDraft[label] || 0);
         const maxForThis = getModalMaxForOption(label);
