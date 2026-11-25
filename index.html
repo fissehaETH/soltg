@@ -1772,6 +1772,7 @@
 
     function renderCatalog() {
       const query = document.getElementById("searchInput").value.toLowerCase().trim();
+      const container = document.getElementById("catalogList");
       const minRaw = document.getElementById("minPriceFilter").value;
       const maxRaw = document.getElementById("maxPriceFilter").value;
       const minPrice = minRaw === "" ? null : Number(minRaw);
