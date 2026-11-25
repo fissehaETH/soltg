@@ -97,16 +97,60 @@
       </button>
     </div>
 
-    <!-- Search & Categories (Visible only on Shop tab) -->
+    <!-- Search, sorting and advanced filters (Shop tab only) -->
     <div id="shopControls">
-      <div class="mt-2.5">
+      <div class="mt-2.5 relative">
+        <span class="absolute left-3.5 top-1/2 -translate-y-1/2 hint-text">⌕</span>
         <input
           id="searchInput"
-          type="text"
-          placeholder="Search cement, rebar, sand, paint, size..."
+          type="search"
+          autocomplete="off"
+          placeholder="Search name, category, code, size..."
           oninput="renderCatalog()"
-          class="w-full rounded-xl px-3.5 py-2 text-sm bg-black/5 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          class="w-full rounded-xl pl-9 pr-3.5 py-2.5 text-sm bg-black/5 focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
+      </div>
+      <div class="mt-2 flex items-center gap-2">
+        <button id="filterToggleBtn" type="button" onclick="toggleAdvancedFilters()"
+          class="px-3 py-2 rounded-xl bg-blue-500/10 text-blue-700 text-xs font-bold border border-blue-500/15">
+          ⚙ Filters <span id="activeFilterCount" class="hidden ml-1 rounded-full bg-blue-600 text-white px-1.5 py-0.5">0</span>
+        </button>
+        <select id="sortSelect" onchange="renderCatalog()"
+          class="min-w-0 flex-1 rounded-xl px-3 py-2 text-xs font-semibold bg-black/5 border-0 focus:outline-none focus:ring-2 focus:ring-blue-500">
+          <option value="featured">Sort: Recommended</option>
+          <option value="name-asc">Name: A to Z</option>
+          <option value="price-asc">Price: Low to High</option>
+          <option value="price-desc">Price: High to Low</option>
+          <option value="stock-desc">Stock: Highest First</option>
+        </select>
+      </div>
+      <div id="advancedFilters" class="hidden mt-2.5 rounded-2xl border border-black/10 bg-white p-3 space-y-3 shadow-sm">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-bold">Refine materials</span>
+          <button type="button" onclick="clearAdvancedFilters()" class="text-xs font-semibold text-blue-600">Clear filters</button>
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <label class="text-[11px] hint-text">Minimum price (ETB)
+            <input id="minPriceFilter" type="number" min="0" step="any" placeholder="No minimum"
+              oninput="renderCatalog()" class="mt-1 w-full rounded-lg px-2.5 py-2 text-xs bg-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+          </label>
+          <label class="text-[11px] hint-text">Maximum price (ETB)
+            <input id="maxPriceFilter" type="number" min="0" step="any" placeholder="No maximum"
+              oninput="renderCatalog()" class="mt-1 w-full rounded-lg px-2.5 py-2 text-xs bg-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+          </label>
+        </div>
+        <label class="block text-[11px] hint-text">Stock availability
+          <select id="stockFilter" onchange="renderCatalog()" class="mt-1 w-full rounded-lg px-2.5 py-2 text-xs bg-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <option value="all">All products</option>
+            <option value="in">In stock only</option>
+            <option value="out">Out of stock</option>
+            <option value="low">Low stock (10 or less)</option>
+          </select>
+        </label>
+      </div>
+      <div class="mt-2 flex items-center justify-between">
+        <span id="catalogResultCount" class="text-[11px] hint-text">Loading products...</span>
+        <button id="clearSearchBtn" type="button" onclick="clearCatalogSearch()" class="hidden text-[11px] font-semibold text-blue-600">Clear search</button>
       </div>
       <div id="categoryBar" class="mt-2.5 flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5"></div>
     </div>
@@ -316,6 +360,7 @@
     // cart keyed by "itemId::variant" -> { id, variant, qty }
     let cart = {};
     let selectedCategory = "All";
+    let advancedFiltersOpen = false;
     let currentScreen = "catalog"; // "catalog" | "orders" | "checkout" | "success"
     let isSubmitting = false;
     let isFetchingOrders = false;
@@ -1262,6 +1307,27 @@
       return "📦";
     }
 
+    function toggleAdvancedFilters() {
+      advancedFiltersOpen = !advancedFiltersOpen;
+      document.getElementById("advancedFilters").classList.toggle("hidden", !advancedFiltersOpen);
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+    }
+
+    function clearAdvancedFilters() {
+      document.getElementById("minPriceFilter").value = "";
+      document.getElementById("maxPriceFilter").value = "";
+      document.getElementById("stockFilter").value = "all";
+      document.getElementById("sortSelect").value = "featured";
+      selectedCategory = "All";
+      renderCategories();
+      renderCatalog();
+    }
+
+    function clearCatalogSearch() {
+      document.getElementById("searchInput").value = "";
+      clearAdvancedFilters();
+    }
+
     function selectCategory(cat) {
       selectedCategory = cat;
       if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
@@ -1706,17 +1772,64 @@
 
     function renderCatalog() {
       const query = document.getElementById("searchInput").value.toLowerCase().trim();
-      const container = document.getElementById("catalogList");
+      const minRaw = document.getElementById("minPriceFilter").value;
+      const maxRaw = document.getElementById("maxPriceFilter").value;
+      const minPrice = minRaw === "" ? null : Number(minRaw);
+      const maxPrice = maxRaw === "" ? null : Number(maxRaw);
+      const stockMode = document.getElementById("stockFilter").value;
+      const sortMode = document.getElementById("sortSelect").value;
 
-      const filtered = catalog.filter(it => {
-        const optionLabels = (it.options || []).map(o => (typeof o === "object" ? o.label : o));
-        const optionsText = optionLabels.join(" ").toLowerCase();
-        const matchesSearch = it.name.toLowerCase().includes(query) ||
-                              (it.category || "").toLowerCase().includes(query) ||
-                              optionsText.includes(query);
+      const getItemPriceRange = it => {
+        const prices = Array.isArray(it.options) && it.options.length
+          ? it.options.map(o => getUnitPrice(it, typeof o === "object" ? o.label : o))
+          : [Number(it.price) || 0];
+        const valid = prices.map(Number).filter(Number.isFinite);
+        return {
+          min: valid.length ? Math.min(...valid) : 0,
+          max: valid.length ? Math.max(...valid) : 0
+        };
+      };
+
+      let filtered = catalog.filter(it => {
+        const optionLabels = (it.options || []).map(o => typeof o === "object" ? o.label : o);
+        const searchable = [
+          it.name, it.category, it.id, it.unit, ...optionLabels
+        ].filter(Boolean).join(" ").toLowerCase();
+        const matchesSearch = !query || searchable.includes(query);
         const matchesCat = selectedCategory === "All" || (it.category || "General") === selectedCategory;
-        return matchesSearch && matchesCat;
+        const priceRange = getItemPriceRange(it);
+        const matchesMin = minPrice === null || !Number.isFinite(minPrice) || priceRange.max >= minPrice;
+        const matchesMax = maxPrice === null || !Number.isFinite(maxPrice) || priceRange.min <= maxPrice;
+        const stock = Math.max(0, Number(it.stock) || 0);
+        const matchesStock =
+          stockMode === "in" ? stock > 0 :
+          stockMode === "out" ? stock <= 0 :
+          stockMode === "low" ? stock > 0 && stock <= 10 : true;
+        return matchesSearch && matchesCat && matchesMin && matchesMax && matchesStock;
       });
+
+      if (sortMode === "name-asc") {
+        filtered.sort((a,b) => String(a.name || "").localeCompare(String(b.name || "")));
+      } else if (sortMode === "price-asc") {
+        filtered.sort((a,b) => getItemPriceRange(a).min - getItemPriceRange(b).min);
+      } else if (sortMode === "price-desc") {
+        filtered.sort((a,b) => getItemPriceRange(b).min - getItemPriceRange(a).min);
+      } else if (sortMode === "stock-desc") {
+        filtered.sort((a,b) => (Number(b.stock) || 0) - (Number(a.stock) || 0));
+      }
+
+      const activeCount = [
+        minRaw !== "", maxRaw !== "", stockMode !== "all"
+      ].filter(Boolean).length;
+      const countBadge = document.getElementById("activeFilterCount");
+      countBadge.textContent = activeCount;
+      countBadge.classList.toggle("hidden", activeCount === 0);
+      document.getElementById("catalogResultCount").textContent =
+        `Showing ${filtered.length} of ${catalog.length} materials`;
+      document.getElementById("clearSearchBtn").classList.toggle(
+        "hidden",
+        !(query || selectedCategory !== "All" || activeCount > 0)
+      );
 
       if (!filtered.length) {
         container.innerHTML = `<div class="col-span-full text-center py-10 hint-text text-sm">No matching materials found.</div>`;
