@@ -293,8 +293,34 @@
     let modalDraft = {};
     let bannerTimer = null;
 
+    // This shop is Telegram Mini App only. initDataUnsafe is display-only and is never sent as proof of identity.
+    const tgInitData = tg && typeof tg.initData === "string" ? tg.initData : "";
     const tgUser = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) ? tg.initDataUnsafe.user : {};
     const tgDefaultName = [tgUser.first_name, tgUser.last_name].filter(Boolean).join(" ");
+
+    function requireTelegramAuth() {
+      if (!tg || !tgInitData) {
+        throw new Error("Please open Solomon Building Materials from the Telegram bot menu button.");
+      }
+      return tgInitData;
+    }
+
+    function getCheckoutRequestId() {
+      const key = "sol_pending_checkout_request";
+      let id = "";
+      try { id = localStorage.getItem(key) || ""; } catch (e) {}
+      if (!id) {
+        id = (window.crypto && crypto.randomUUID)
+          ? crypto.randomUUID()
+          : "req-" + Date.now() + "-" + Math.random().toString(36).slice(2);
+        try { localStorage.setItem(key, id); } catch (e) {}
+      }
+      return id;
+    }
+
+    function clearCheckoutRequestId() {
+      try { localStorage.removeItem("sol_pending_checkout_request"); } catch (e) {}
+    }
 
     /* ---------------------------------------------------------------
        SAVED DELIVERY PROFILE (AUTO-SAVE & RESTORE)
@@ -688,8 +714,7 @@
       if (orderPollInterval) clearInterval(orderPollInterval);
       orderPollInterval = setInterval(() => {
         if (document.hidden) return;
-        const hasIdentity = Boolean(tgUser.id) || getLocalOrderIds().length > 0;
-        if (!hasIdentity) return;
+        if (!tgInitData) return;
 
         loadOrders({ silent: true });
       }, 12000);
@@ -773,10 +798,12 @@
 
       isFetchingOrders = true;
       try {
-        const chatId = tgUser.id ? String(tgUser.id) : "";
-        const localIds = getLocalOrderIds().join(",");
-        const url = `${API_URL}?action=orders&chatId=${encodeURIComponent(chatId)}&orderIds=${encodeURIComponent(localIds)}`;
-        const res = await fetch(url);
+        const initData = requireTelegramAuth();
+        const res = await fetch(API_URL, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          body: JSON.stringify({ action: "orders", initData })
+        });
         const data = await res.json();
         if (!data.ok) throw new Error(data.error || "Failed to load orders");
 
@@ -1067,8 +1094,7 @@
           body: JSON.stringify({
             action: "cancel_order",
             orderId: orderId,
-            user: tgUser,
-            localOrderIds: getLocalOrderIds()
+            initData: requireTelegramAuth()
           })
         });
 
@@ -1903,12 +1929,13 @@
           headers: { "Content-Type": "text/plain;charset=utf-8" },
           body: JSON.stringify({
             action: "checkout",
+            initData: requireTelegramAuth(),
+            requestId: getCheckoutRequestId(),
             cart: entries.map(e => ({ id: e.id, variant: e.variant, qty: e.qty })),
             customerName,
             phone,
             location,
-            notes,
-            user: tgUser
+            notes
           })
         });
 
@@ -1919,6 +1946,7 @@
           throw new Error(data.error || "Order failed");
         }
 
+        clearCheckoutRequestId();
         saveLocalOrderId(data.orderId);
         knownOrderStatuses[data.orderId] = "Pending";
         if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
