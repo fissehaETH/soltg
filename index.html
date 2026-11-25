@@ -84,8 +84,8 @@
       </button>
     </div>
 
-    <!-- Navigation Tabs: Shop vs My Orders -->
-    <div class="mt-2.5 grid grid-cols-2 gap-1.5 bg-black/5 p-1 rounded-xl">
+    <!-- Navigation Tabs -->
+    <div class="mt-2.5 grid grid-cols-3 gap-1.5 bg-black/5 p-1 rounded-xl">
       <button id="tabShopBtn" onclick="switchTab('catalog')"
         class="accent-btn py-1.5 rounded-lg text-xs font-bold shadow-sm transition">
         🏗️ Shop
@@ -94,6 +94,9 @@
         class="relative py-1.5 rounded-lg text-xs font-semibold hint-text transition flex items-center justify-center gap-1.5">
         <span>🧾 My Orders</span>
         <span id="ordersUpdateDot" class="hidden w-2 h-2 rounded-full bg-blue-500 animate-ping"></span>
+      </button>
+      <button id="tabAdminBtn" onclick="switchTab('admin')" class="hidden py-1.5 rounded-lg text-xs font-semibold hint-text transition">
+        🛠 Admin
       </button>
     </div>
 
@@ -220,6 +223,27 @@
       Checking your orders...
     </div>
     <div id="ordersList" class="space-y-3"></div>
+  </section>
+
+  <!-- Admin Order Dashboard (visible only after server-side admin authorization) -->
+  <section id="adminView" class="hidden p-4 space-y-3">
+    <div class="flex items-center justify-between gap-2">
+      <div>
+        <h2 class="text-lg font-bold">🛠 Order Dashboard</h2>
+        <p class="text-[11px] hint-text">Manage customer orders and delivery progress</p>
+      </div>
+      <button onclick="loadAdminOrders()" class="text-xs font-semibold text-blue-600 bg-blue-500/10 px-3 py-2 rounded-xl">↻ Refresh</button>
+    </div>
+    <div id="adminStats" class="grid grid-cols-2 sm:grid-cols-4 gap-2"></div>
+    <div class="flex gap-2">
+      <input id="adminSearch" oninput="renderAdminOrders()" placeholder="Search order, customer, phone..." class="min-w-0 flex-1 rounded-xl px-3 py-2.5 text-xs bg-black/5 focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+      <select id="adminStatusFilter" onchange="renderAdminOrders()" class="rounded-xl px-2 py-2 text-xs bg-black/5">
+        <option value="All">All statuses</option>
+        <option>Pending</option><option>Confirmed</option><option>Out for Delivery</option><option>Delivered</option><option>Cancelled</option>
+      </select>
+    </div>
+    <div id="adminOrdersLoading" class="hidden text-center py-8 hint-text text-sm">Loading orders...</div>
+    <div id="adminOrdersList" class="space-y-3"></div>
   </section>
 
   <!-- Checkout View -->
@@ -354,6 +378,9 @@
 
     let catalog = [];
     let recentOrders = [];
+    let adminOrders = [];
+    let isAdmin = false;
+    let isFetchingAdminOrders = false;
     let knownOrderStatuses = {}; // { [orderId]: status }
     let newlyChangedOrderIds = new Set();
 
@@ -805,30 +832,33 @@
       currentScreen = tab;
       const shopBtn = document.getElementById("tabShopBtn");
       const ordersBtn = document.getElementById("tabOrdersBtn");
+      const adminBtn = document.getElementById("tabAdminBtn");
       const shopControls = document.getElementById("shopControls");
 
-      document.getElementById("catalogView").classList.add("hidden");
-      document.getElementById("ordersView").classList.add("hidden");
-      document.getElementById("checkoutView").classList.add("hidden");
-      document.getElementById("successView").classList.add("hidden");
-
+      ["catalogView","ordersView","adminView","checkoutView","successView"].forEach(id =>
+        document.getElementById(id).classList.add("hidden")
+      );
       if (tg && tg.BackButton) tg.BackButton.hide();
 
+      shopBtn.className = tab === "catalog" ? "accent-btn py-1.5 rounded-lg text-xs font-bold shadow-sm transition" : "py-1.5 rounded-lg text-xs font-semibold hint-text transition";
+      ordersBtn.className = tab === "orders" ? "accent-btn py-1.5 rounded-lg text-xs font-bold shadow-sm transition flex items-center justify-center gap-1.5" : "py-1.5 rounded-lg text-xs font-semibold hint-text transition flex items-center justify-center gap-1.5";
+      if (adminBtn) adminBtn.className = tab === "admin" ? "accent-btn py-1.5 rounded-lg text-xs font-bold shadow-sm transition" : "py-1.5 rounded-lg text-xs font-semibold hint-text transition";
+
+      shopControls.classList.toggle("hidden", tab !== "catalog");
+      if (tab === "catalog") document.getElementById("catalogView").classList.remove("hidden");
       if (tab === "orders") {
         document.getElementById("ordersUpdateDot").classList.add("hidden");
-        ordersBtn.className = "relative accent-btn py-1.5 rounded-lg text-xs font-bold shadow-sm transition flex items-center justify-center gap-1.5";
-        shopBtn.className = "py-1.5 rounded-lg text-xs font-semibold hint-text transition";
-        shopControls.classList.add("hidden");
         document.getElementById("ordersView").classList.remove("hidden");
         loadOrders({ manual: true });
-      } else {
-        stopCancelCountdownTimer();
-        shopBtn.className = "accent-btn py-1.5 rounded-lg text-xs font-bold shadow-sm transition";
-        ordersBtn.className = "relative py-1.5 rounded-lg text-xs font-semibold hint-text transition flex items-center justify-center gap-1.5";
-        shopControls.classList.remove("hidden");
-        document.getElementById("catalogView").classList.remove("hidden");
       }
-
+      if (tab === "admin" && isAdmin) {
+        document.getElementById("adminView").classList.remove("hidden");
+        loadAdminOrders();
+      } else if (tab === "admin") {
+        switchTab("catalog");
+        return;
+      }
+      if (tab !== "orders") stopCancelCountdownTimer();
       if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
       updateMainButton();
     }
@@ -932,6 +962,100 @@
         }
       } finally {
         isFetchingOrders = false;
+      }
+    }
+
+    async function adminApi(action, extra = {}) {
+      const res = await fetch(API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({ action, initData: requireTelegramAuth(), ...extra })
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "Admin request failed");
+      return data;
+    }
+
+    async function checkAdminAccess() {
+      try {
+        await adminApi("admin_orders");
+        isAdmin = true;
+        document.getElementById("tabAdminBtn").classList.remove("hidden");
+      } catch (e) {
+        isAdmin = false;
+        document.getElementById("tabAdminBtn").classList.add("hidden");
+      }
+    }
+
+    async function loadAdminOrders() {
+      if (!isAdmin || isFetchingAdminOrders) return;
+      isFetchingAdminOrders = true;
+      const loading = document.getElementById("adminOrdersLoading");
+      loading.classList.remove("hidden");
+      try {
+        const data = await adminApi("admin_orders");
+        adminOrders = data.orders || [];
+        renderAdminOrders();
+      } catch (e) {
+        document.getElementById("adminOrdersList").innerHTML =
+          '<div class="rounded-xl bg-red-50 text-red-700 p-3 text-xs">' + escapeHtml(e.message) + '</div>';
+      } finally {
+        loading.classList.add("hidden");
+        isFetchingAdminOrders = false;
+      }
+    }
+
+    function renderAdminOrders() {
+      const q = (document.getElementById("adminSearch").value || "").toLowerCase().trim();
+      const status = document.getElementById("adminStatusFilter").value;
+      const count = st => adminOrders.filter(o => o.status === st).length;
+      document.getElementById("adminStats").innerHTML = [
+        ["Total", adminOrders.length, "bg-slate-100 text-slate-800"],
+        ["Pending", count("Pending"), "bg-amber-50 text-amber-700"],
+        ["Preparing", count("Confirmed"), "bg-blue-50 text-blue-700"],
+        ["On delivery", count("Out for Delivery"), "bg-purple-50 text-purple-700"]
+      ].map(x => '<div class="rounded-xl p-3 ' + x[2] + '"><div class="text-[10px] font-semibold opacity-75">' + x[0] + '</div><div class="text-xl font-bold">' + x[1] + '</div></div>').join("");
+
+      const list = adminOrders.filter(o => {
+        const haystack = [o.orderId,o.customerName,o.username,o.contact,o.chatId].join(" ").toLowerCase();
+        return (!q || haystack.includes(q)) && (status === "All" || o.status === status);
+      });
+      const container = document.getElementById("adminOrdersList");
+      if (!list.length) {
+        container.innerHTML = '<div class="text-center py-8 hint-text text-sm">No matching orders.</div>';
+        return;
+      }
+      container.innerHTML = list.map(o => {
+        const id = escapeHtml(o.orderId);
+        const statusOptions = ["Pending","Confirmed","Out for Delivery","Delivered","Cancelled"];
+        return '<article class="card-surface rounded-2xl p-3.5 border border-black/10 shadow-sm space-y-2.5">' +
+          '<div class="flex items-start justify-between gap-2"><div class="min-w-0"><div class="font-mono text-xs font-bold text-blue-600">' + id + '</div><div class="font-semibold text-sm mt-0.5">' + escapeHtml(o.customerName || "Customer") + '</div><div class="text-[10px] hint-text">' + escapeHtml(o.date) + ' · ' + escapeHtml(o.username || "") + '</div></div>' +
+          '<div class="text-right shrink-0"><div class="font-bold text-sm">' + fmt(o.total) + ' ETB</div><div class="text-[10px] hint-text">' + fmt(o.totalItems) + ' items</div></div></div>' +
+          '<div class="text-xs whitespace-pre-line border-t border-black/5 pt-2">' + escapeHtml(o.summary).replace(/;\s*/g, "\n") + '</div>' +
+          '<div class="text-[11px] hint-text">📞 ' + escapeHtml(o.contact) + '</div>' +
+          '<div class="flex items-center gap-2"><select id="admin-status-' + id + '" class="min-w-0 flex-1 rounded-xl bg-slate-100 px-2.5 py-2 text-xs font-semibold">' +
+          statusOptions.map(st => '<option ' + (o.status === st ? "selected" : "") + '>' + st + '</option>').join("") +
+          '</select><button onclick="updateAdminOrderStatus(\'' + id.replace(/'/g,"\\'") + '\')" class="accent-btn rounded-xl px-3 py-2 text-xs font-bold">Update</button></div>' +
+          (o.stockSync === "RESTOCK_ERROR" ? '<div class="text-[11px] text-red-600 font-semibold">⚠ Stock restoration needs manual review</div>' : '') +
+          '</article>';
+      }).join("");
+    }
+
+    async function updateAdminOrderStatus(orderId) {
+      if (!isAdmin) return;
+      const select = document.getElementById("admin-status-" + orderId);
+      const status = select.value;
+      if (!confirm("Change order " + orderId + " to " + status + "?")) return;
+      select.disabled = true;
+      try {
+        const result = await adminApi("admin_update_status", { orderId, status });
+        showToast("Order " + orderId + " updated: " + result.status);
+        await loadAdminOrders();
+        await loadOrders({ silent: true });
+      } catch (e) {
+        showToast(e.message);
+      } finally {
+        select.disabled = false;
       }
     }
 
@@ -2134,6 +2258,7 @@
     }
 
     loadDeliveryProfile();
+    checkAdminAccess();
     loadCatalog();
     loadOrders({ silent: true });
     startOrderStatusPolling();
