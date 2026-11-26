@@ -829,6 +829,15 @@
     }
 
     function switchTab(tab) {
+      // Never allow an unauthorized user to reveal or open the Admin area.
+      if (tab === "admin" && !isAdmin) {
+        const deniedAdminBtn = document.getElementById("tabAdminBtn");
+        const deniedAdminView = document.getElementById("adminView");
+        if (deniedAdminBtn) deniedAdminBtn.classList.add("hidden");
+        if (deniedAdminView) deniedAdminView.classList.add("hidden");
+        return switchTab("catalog");
+      }
+
       currentScreen = tab;
       const shopBtn = document.getElementById("tabShopBtn");
       const ordersBtn = document.getElementById("tabOrdersBtn");
@@ -842,7 +851,11 @@
 
       shopBtn.className = tab === "catalog" ? "accent-btn py-1.5 rounded-lg text-xs font-bold shadow-sm transition" : "py-1.5 rounded-lg text-xs font-semibold hint-text transition";
       ordersBtn.className = tab === "orders" ? "accent-btn py-1.5 rounded-lg text-xs font-bold shadow-sm transition flex items-center justify-center gap-1.5" : "py-1.5 rounded-lg text-xs font-semibold hint-text transition flex items-center justify-center gap-1.5";
-      if (adminBtn) adminBtn.className = tab === "admin" ? "accent-btn py-1.5 rounded-lg text-xs font-bold shadow-sm transition" : "py-1.5 rounded-lg text-xs font-semibold hint-text transition";
+      if (adminBtn && isAdmin) {
+        adminBtn.className = tab === "admin" ? "accent-btn py-1.5 rounded-lg text-xs font-bold shadow-sm transition" : "py-1.5 rounded-lg text-xs font-semibold hint-text transition";
+      } else if (adminBtn) {
+        adminBtn.classList.add("hidden");
+      }
 
       shopControls.classList.toggle("hidden", tab !== "catalog");
       if (tab === "catalog") document.getElementById("catalogView").classList.remove("hidden");
@@ -854,9 +867,6 @@
       if (tab === "admin" && isAdmin) {
         document.getElementById("adminView").classList.remove("hidden");
         loadAdminOrders();
-      } else if (tab === "admin") {
-        switchTab("catalog");
-        return;
       }
       if (tab !== "orders") stopCancelCountdownTimer();
       if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
@@ -984,6 +994,9 @@
       } catch (e) {
         isAdmin = false;
         document.getElementById("tabAdminBtn").classList.add("hidden");
+        document.getElementById("adminView").classList.add("hidden");
+        adminOrders = [];
+        if (currentScreen === "admin") switchTab("catalog");
       }
     }
 
