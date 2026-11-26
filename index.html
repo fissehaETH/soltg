@@ -85,7 +85,7 @@
     </div>
 
     <!-- Navigation Tabs -->
-    <div class="mt-2.5 grid grid-cols-3 gap-1.5 bg-black/5 p-1 rounded-xl">
+    <div id="mainTabs" class="mt-2.5 grid grid-cols-2 gap-1.5 bg-black/5 p-1 rounded-xl transition-all">
       <button id="tabShopBtn" onclick="switchTab('catalog')"
         class="accent-btn py-1.5 rounded-lg text-xs font-bold shadow-sm transition">
         🏗️ Shop
@@ -991,9 +991,15 @@
         await adminApi("admin_orders");
         isAdmin = true;
         document.getElementById("tabAdminBtn").classList.remove("hidden");
+        const mainTabs = document.getElementById("mainTabs");
+        mainTabs.classList.remove("grid-cols-2");
+        mainTabs.classList.add("grid-cols-3");
       } catch (e) {
         isAdmin = false;
         document.getElementById("tabAdminBtn").classList.add("hidden");
+        const mainTabs = document.getElementById("mainTabs");
+        mainTabs.classList.remove("grid-cols-3");
+        mainTabs.classList.add("grid-cols-2");
         document.getElementById("adminView").classList.add("hidden");
         adminOrders = [];
         if (currentScreen === "admin") switchTab("catalog");
