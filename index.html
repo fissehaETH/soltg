@@ -61,6 +61,14 @@
     }
 
     /* Use the full available viewport width for the shop catalog. */
+    #stickySearchBar {
+      position: sticky;
+      top: 0;
+      z-index: 30;
+      padding: 8px 0;
+      margin-top: 0.5rem;
+      background: #ffffff;
+    }
     #catalogView {
       display: block;
       width: 100%;
@@ -101,7 +109,7 @@
   </div>
 
   <!-- Header -->
-  <header class="sticky top-0 z-20 card-surface border-b border-black/10 px-4 pt-3 pb-2.5 shadow-sm">
+  <header class="relative z-10 card-surface border-b border-black/10 px-4 pt-3 pb-2.5 shadow-sm">
     <div class="flex items-center justify-between">
       <div class="flex min-w-0 items-center gap-3">
         <img
@@ -138,7 +146,7 @@
 
     <!-- Search, sorting and advanced filters (Shop tab only) -->
     <div id="shopControls">
-      <div class="mt-2.5 relative">
+      <div id="stickySearchBar" class="mt-2.5 relative">
         <span class="absolute left-3.5 top-1/2 -translate-y-1/2 hint-text">⌕</span>
         <input
           id="searchInput"
