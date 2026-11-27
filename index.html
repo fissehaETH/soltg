@@ -260,13 +260,16 @@
   </section>
 
   <!-- Admin Order Dashboard (visible only after server-side admin authorization) -->
-  <section id="adminView" class="hidden p-4 space-y-3">
-    <div class="flex items-center justify-between gap-2">
-      <div>
-        <h2 class="text-lg font-bold">🛠 Order Dashboard</h2>
-        <p class="text-[11px] hint-text">Manage customer orders and delivery progress</p>
+  <section id="adminView" class="hidden fixed inset-0 z-[90] overflow-y-auto overscroll-contain p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] space-y-3" style="background:var(--app-bg, #f8fafc);">
+    <div class="flex items-center justify-between gap-2 border-b border-black/10 pb-3">
+      <div class="flex items-center gap-3 min-w-0">
+        <button onclick="switchTab('catalog')" aria-label="Back to shop" class="w-9 h-9 shrink-0 rounded-xl bg-black/5 flex items-center justify-center text-lg active:scale-95">←</button>
+        <div class="min-w-0">
+          <h2 class="text-lg font-bold">🛠 Order Dashboard</h2>
+          <p class="text-[11px] hint-text">Manage customer orders and delivery progress</p>
+        </div>
       </div>
-      <button onclick="loadAdminOrders()" class="text-xs font-semibold text-blue-600 bg-blue-500/10 px-3 py-2 rounded-xl">↻ Refresh</button>
+      <button onclick="loadAdminOrders()" class="shrink-0 text-xs font-semibold text-blue-600 bg-blue-500/10 px-3 py-2 rounded-xl">↻ Refresh</button>
     </div>
     <div id="adminStats" class="grid grid-cols-2 sm:grid-cols-4 gap-2"></div>
     <div class="flex gap-2">
@@ -882,9 +885,9 @@
         document.getElementById(id).classList.add("hidden")
       );
       const mainHeader = document.getElementById("mainHeader");
-      if (mainHeader) mainHeader.classList.toggle("hidden", tab === "orders");
+      if (mainHeader) mainHeader.classList.toggle("hidden", tab === "orders" || tab === "admin");
       if (tg && tg.BackButton) {
-        if (tab === "orders") tg.BackButton.show();
+        if (tab === "orders" || tab === "admin") tg.BackButton.show();
         else tg.BackButton.hide();
       }
 
@@ -2125,7 +2128,7 @@
 
       if (!tg || !tg.MainButton) return;
 
-      if (itemCount === 0 || currentScreen === "success" || currentScreen === "orders") {
+      if (itemCount === 0 || currentScreen === "success" || currentScreen === "orders" || currentScreen === "admin") {
         tg.MainButton.hide();
         return;
       }
@@ -2296,7 +2299,7 @@
       }
       tg.onEvent("backButtonClicked", () => {
         if (currentScreen === "checkout") closeCheckout();
-        else if (currentScreen === "orders") switchTab("catalog");
+        else if (currentScreen === "orders" || currentScreen === "admin") switchTab("catalog");
       });
     }
 
