@@ -2304,10 +2304,17 @@
     }
 
     if (tg) {
-      tg.onEvent("mainButtonClicked", () => {
-        if (currentScreen === "catalog") openCheckout();
-        else if (currentScreen === "checkout") submitOrder();
-      });
+      // Use Telegram's MainButton click API directly so View Cart and Place Order
+      // remain responsive after the screen changes between catalog and checkout.
+      if (tg.MainButton && typeof tg.MainButton.onClick === "function") {
+        tg.MainButton.onClick(() => {
+          if (currentScreen === "catalog") {
+            openCheckout();
+          } else if (currentScreen === "checkout") {
+            submitOrder();
+          }
+        });
+      }
       tg.onEvent("backButtonClicked", () => {
         if (currentScreen === "checkout") closeCheckout();
       });
