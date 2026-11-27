@@ -884,11 +884,17 @@
       ["catalogView","ordersView","adminView","checkoutView","successView"].forEach(id =>
         document.getElementById(id).classList.add("hidden")
       );
+      // Keep the main navigation available on every screen.
       const mainHeader = document.getElementById("mainHeader");
-      if (mainHeader) mainHeader.classList.toggle("hidden", tab === "orders" || tab === "admin");
-      if (tg && tg.BackButton) {
-        if (tab === "orders" || tab === "admin") tg.BackButton.show();
-        else tg.BackButton.hide();
+      if (mainHeader) mainHeader.classList.remove("hidden");
+      // The in-app tabs provide navigation between Shop, Orders and Admin.
+      if (tg && tg.BackButton) tg.BackButton.hide();
+
+      // Customers see two equal tabs; authorized admins see three.
+      const mainTabs = document.getElementById("mainTabs");
+      if (mainTabs) {
+        mainTabs.classList.toggle("grid-cols-3", !!isAdmin);
+        mainTabs.classList.toggle("grid-cols-2", !isAdmin);
       }
 
       shopBtn.className = tab === "catalog" ? "accent-btn py-1.5 rounded-lg text-xs font-bold shadow-sm transition" : "py-1.5 rounded-lg text-xs font-semibold hint-text transition";
