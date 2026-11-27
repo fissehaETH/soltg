@@ -2225,6 +2225,13 @@
         tg.BackButton.show();
       }
       updateMainButton();
+
+      // The catalog may be scrolled far down. Reset the page position after
+      // switching views so the cart summary is immediately visible.
+      requestAnimationFrame(() => {
+        window.scrollTo(0, 0);
+        document.getElementById("checkoutView").scrollIntoView({ block: "start", behavior: "instant" });
+      });
     }
 
     function closeCheckout() {
